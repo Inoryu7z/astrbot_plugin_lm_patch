@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>记忆演化</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="sidebar-title">记忆演化</div>
+          <div class="sidebar-subtitle">LivingMemory Patch</div>
+        </div>
+        <nav class="nav" id="nav">
+          <div class="nav-item active" data-page="proposals">
+            <span>提案审批</span>
+            <span class="nav-badge" id="badge-pending" style="display:none">0</span>
+          </div>
+          <div class="nav-item" data-page="snapshots">
+            <span>人设快照</span>
+          </div>
+          <div class="nav-item" data-page="logs">
+            <span>压缩日志</span>
+          </div>
+          <div class="nav-item" data-page="status">
+            <span>运行状态</span>
+          </div>
+        </nav>
+        <div class="sidebar-footer" id="footer-info">加载中...</div>
+      </aside>
+
+      <main class="main-content">
+        <!-- 提案审批页 -->
+        <section class="page active" id="page-proposals">
+          <div class="page-header">
+            <div class="page-title">提案审批</div>
+            <div class="page-actions">
+              <button class="btn btn-sm" id="btn-refresh-proposals">刷新</button>
+              <button class="btn btn-primary btn-sm" id="btn-trigger-patch">手动触发补丁</button>
+            </div>
+          </div>
+
+          <div class="filter-bar" id="proposal-filters">
+            <button class="filter-btn active" data-status="">全部</button>
+            <button class="filter-btn" data-status="pending">待审</button>
+            <button class="filter-btn" data-status="approved">已通过</button>
+            <button class="filter-btn" data-status="rejected">已拒绝</button>
+            <button class="filter-btn" data-status="stalled">无法收敛</button>
+          </div>
+
+          <div class="proposal-layout">
+            <div class="proposal-list" id="proposal-list">
+              <div class="loading"><span class="spinner"></span>加载中...</div>
+            </div>
+            <div class="proposal-detail" id="proposal-detail">
+              <div class="empty-state">
+                <div class="empty-state-icon">&#128218;</div>
+                <div>从左侧选择一个提案查看详情</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 人设快照页 -->
+        <section class="page" id="page-snapshots">
+          <div class="page-header">
+            <div class="page-title">人设快照</div>
+            <div class="page-actions">
+              <button class="btn btn-sm" id="btn-refresh-snapshots">刷新</button>
+            </div>
+          </div>
+          <div class="card">
+            <table class="data-table" id="snapshot-table">
+              <thead>
+                <tr>
+                  <th class="col-id">#</th>
+                  <th>Persona</th>
+                  <th>变更说明</th>
+                  <th class="col-time">创建时间</th>
+                  <th class="col-action">操作</th>
+                </tr>
+              </thead>
+              <tbody id="snapshot-tbody">
+                <tr><td colspan="5" style="text-align:center;color:var(--text-faint);padding:40px">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 压缩日志页 -->
+        <section class="page" id="page-logs">
+          <div class="page-header">
+            <div class="page-title">压缩日志</div>
+            <div class="page-actions">
+              <button class="btn btn-sm" id="btn-refresh-logs">刷新</button>
+              <button class="btn btn-primary btn-sm" id="btn-trigger-compact">手动触发压缩</button>
+            </div>
+          </div>
+          <div class="card">
+            <table class="data-table" id="log-table">
+              <thead>
+                <tr>
+                  <th class="col-id">#</th>
+                  <th>Persona</th>
+                  <th>删除条数</th>
+                  <th>新增条数</th>
+                  <th class="col-time">执行时间</th>
+                </tr>
+              </thead>
+              <tbody id="log-tbody">
+                <tr><td colspan="5" style="text-align:center;color:var(--text-faint);padding:40px">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 运行状态页 -->
+        <section class="page" id="page-status">
+          <div class="page-header">
+            <div class="page-title">运行状态</div>
+            <div class="page-actions">
+              <button class="btn btn-sm" id="btn-refresh-status">刷新</button>
+            </div>
+          </div>
+          <div class="status-grid" id="status-grid">
+            <div class="loading"><span class="spinner"></span>加载中...</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast-container"></div>
+    <div id="modal-container"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

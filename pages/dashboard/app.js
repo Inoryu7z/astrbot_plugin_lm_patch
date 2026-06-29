@@ -1,0 +1,690 @@
+// 记忆演化 插件页面逻辑
+
+// ── API Client ──────────────────────────
+
+class ApiClient {
+  constructor() {
+    this.bridge = window.AstrBotPluginPage;
+  }
+
+  async ready() {
+    if (!this.bridge) {
+      throw new Error("Bridge 不可用");
+    }
+    if (this.bridge.ready) {
+      try {
+        await this.bridge.ready();
+      } catch (e) {
+        console.warn("Bridge ready 警告:", e);
+      }
+    }
+  }
+
+  async get(endpoint, params = {}) {
+    if (!this.bridge || !this.bridge.apiGet) {
+      throw new Error("Bridge apiGet 不可用");
+    }
+    const path = endpoint.startsWith("page/") ? endpoint : `page/${endpoint}`;
+    return await this.bridge.apiGet(path, params);
+  }
+
+  async post(endpoint, body = {}) {
+    if (!this.bridge || !this.bridge.apiPost) {
+      throw new Error("Bridge apiPost 不可用");
+    }
+    const path = endpoint.startsWith("page/") ? endpoint : `page/${endpoint}`;
+    return await this.bridge.apiPost(path, body);
+  }
+}
+
+const api = new ApiClient();
+
+// ── State ───────────────────────────────
+
+const state = {
+  proposals: [],
+  currentProposalId: null,
+  proposalFilter: "",
+  snapshots: [],
+  logs: [],
+  status: null,
+};
+
+// ── Utils ───────────────────────────────
+
+function $(id) {
+  return document.getElementById(id);
+}
+
+function esc(text) {
+  if (text == null) return "";
+  const div = document.createElement("div");
+  div.textContent = String(text);
+  return div.innerHTML;
+}
+
+function toast(message, type = "info") {
+  const container = $("toast-container");
+  const el = document.createElement("div");
+  el.className = `toast ${type}`;
+  el.textContent = message;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = "0";
+    el.style.transition = "opacity 0.3s";
+    setTimeout(() => el.remove(), 300);
+  }, 3000);
+}
+
+function showLoading(containerId) {
+  $(containerId).innerHTML =
+    '<div class="loading"><span class="spinner"></span>加载中...</div>';
+}
+
+function statusBadge(status) {
+  const labels = {
+    pending: "待审",
+    approved: "已通过",
+    rejected: "已拒绝",
+    stalled: "无法收敛",
+  };
+  const text = labels[status] || status;
+  return `<span class="badge badge-${status || "dim"}">${esc(text)}</span>`;
+}
+
+function showModal(title, bodyHtml, actionsHtml = "") {
+  const container = $("modal-container");
+  container.innerHTML = `
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-title">${esc(title)}</div>
+        <div class="modal-body">${bodyHtml}</div>
+        <div class="modal-actions">
+          <button class="btn" id="modal-close-btn">关闭</button>
+          ${actionsHtml}
+        </div>
+      </div>
+    </div>
+  `;
+  // 绑定关闭按钮
+  $("modal-close-btn").addEventListener("click", () => {
+    container.innerHTML = "";
+  });
+  // 点击遮罩关闭
+  $("modal-overlay").addEventListener("click", (e) => {
+    if (e.target.id === "modal-overlay") {
+      container.innerHTML = "";
+    }
+  });
+}
+
+// ── Page switching ──────────────────────
+
+function switchPage(pageName) {
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    item.classList.toggle("active", item.dataset.page === pageName);
+  });
+  document.querySelectorAll(".page").forEach((page) => {
+    page.classList.toggle("active", page.id === `page-${pageName}`);
+  });
+
+  // 按需加载数据
+  if (pageName === "proposals") loadProposals();
+  else if (pageName === "snapshots") loadSnapshots();
+  else if (pageName === "logs") loadLogs();
+  else if (pageName === "status") loadStatus();
+}
+
+// ── Proposals ───────────────────────────
+
+async function loadProposals() {
+  showLoading("proposal-list");
+  try {
+    const params = {};
+    if (state.proposalFilter) params.status = state.proposalFilter;
+    const resp = await api.get("proposals", params);
+    if (resp && resp.success) {
+      state.proposals = resp.data || [];
+      renderProposalList();
+      updatePendingBadge();
+    } else {
+      $("proposal-list").innerHTML =
+        '<div class="empty-state">加载失败</div>';
+    }
+  } catch (e) {
+    $("proposal-list").innerHTML = `<div class="empty-state">加载失败: ${esc(
+      e.message
+    )}</div>`;
+  }
+}
+
+function updatePendingBadge() {
+  const badge = $("badge-pending");
+  const pendingCount = state.proposals.filter(
+    (p) => p.status === "pending"
+  ).length;
+  if (pendingCount > 0) {
+    badge.textContent = pendingCount;
+    badge.style.display = "inline-block";
+  } else {
+    badge.style.display = "none";
+  }
+}
+
+function renderProposalList() {
+  const container = $("proposal-list");
+  if (state.proposals.length === 0) {
+    container.innerHTML =
+      '<div class="empty-state"><div class="empty-state-icon">&#128196;</div><div>暂无提案</div></div>';
+    return;
+  }
+
+  container.innerHTML = state.proposals
+    .map((p) => {
+      const isActive = p.id === state.currentProposalId;
+      const rerollInfo =
+        p.reroll_count > 0
+          ? `<span>· 重议 ${p.reroll_count} 次</span>`
+          : "";
+      return `
+      <div class="proposal-item ${isActive ? "active" : ""}" data-id="${p.id}">
+        <div class="proposal-item-id">#${p.id}</div>
+        <div class="proposal-item-persona">${esc(p.persona_name)}</div>
+        <div class="proposal-item-desc">${esc(
+          p.change_description || "(无变更说明)"
+        )}</div>
+        <div class="proposal-item-meta">
+          ${statusBadge(p.status)}
+          <span>· ${esc(p.created_at)}</span>
+          ${rerollInfo}
+        </div>
+      </div>
+    `;
+    })
+    .join("");
+
+  // 绑定点击事件
+  container.querySelectorAll(".proposal-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      const id = parseInt(item.dataset.id);
+      selectProposal(id);
+    });
+  });
+}
+
+function selectProposal(id) {
+  state.currentProposalId = id;
+  renderProposalList();
+  renderProposalDetail();
+}
+
+function renderProposalDetail() {
+  const container = $("proposal-detail");
+  const proposal = state.proposals.find(
+    (p) => p.id === state.currentProposalId
+  );
+
+  if (!proposal) {
+    container.innerHTML =
+      '<div class="empty-state"><div class="empty-state-icon">&#128218;</div><div>从左侧选择一个提案查看详情</div></div>';
+    return;
+  }
+
+  const aspectsHtml =
+    proposal.changed_aspects && proposal.changed_aspects.length > 0
+      ? `<div class="detail-aspects">${proposal.changed_aspects
+          .map((a) => `<span class="aspect-tag">${esc(a)}</span>`)
+          .join("")}</div>`
+      : "";
+
+  const rerollInfo =
+    proposal.reroll_count > 0
+      ? `<span class="badge badge-dim">已重议 ${proposal.reroll_count} 次</span>`
+      : "";
+
+  // 根据状态决定操作按钮
+  let actionsHtml = "";
+  if (proposal.status === "pending") {
+    actionsHtml = `
+      <div class="reroll-box">
+        <textarea id="reroll-reason" placeholder="打回理由（填写后点击「打回重提议」，LLM 将结合理由重新提议）..."></textarea>
+      </div>
+      <div class="action-row">
+        <button class="btn btn-success" id="btn-approve">通过并写回</button>
+        <button class="btn btn-warning" id="btn-reroll">打回重提议</button>
+        <button class="btn btn-danger" id="btn-reject">直接拒绝</button>
+      </div>
+    `;
+  } else if (proposal.status === "stalled") {
+    actionsHtml = `
+      <div class="action-row">
+        <button class="btn btn-primary" id="btn-restart">重启提案</button>
+        <span style="color:var(--text-faint);font-size:12px;align-self:center">
+          该提案已超过最大重议次数，重启后将清零计数并重新提议
+        </span>
+      </div>
+    `;
+  } else {
+    actionsHtml = `<div style="color:var(--text-faint);font-size:13px">该提案状态为「${
+      proposal.status
+    }」，不可再操作</div>`;
+  }
+
+  const rejectionHtml = proposal.rejection_reason
+    ? `<div style="margin-top:8px;font-size:12px;color:var(--orange)">打回理由: ${esc(
+        proposal.rejection_reason
+      )}</div>`
+    : "";
+
+  container.innerHTML = `
+    <div class="detail-header">
+      <div class="detail-persona">${esc(proposal.persona_name)}</div>
+      <div class="detail-desc">${esc(
+        proposal.change_description || "(无变更说明)"
+      )}</div>
+      ${aspectsHtml}
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text-faint)">
+        ${statusBadge(proposal.status)}
+        <span>· 创建于 ${esc(proposal.created_at)}</span>
+        <span>· Persona ID: ${esc(proposal.persona_id)}</span>
+        ${rerollInfo}
+      </div>
+      ${rejectionHtml}
+    </div>
+    <div class="compare-grid">
+      <div class="compare-pane">
+        <div class="compare-pane-header original">
+          <span>原始人设</span>
+          <button class="btn btn-sm" onclick="window._lmpatch.viewText('原始人设', ${proposal.id}, 'original')">查看</button>
+        </div>
+        <div class="compare-pane-body">${esc(proposal.original_persona)}</div>
+      </div>
+      <div class="compare-pane">
+        <div class="compare-pane-header proposed">
+          <span>提议人设</span>
+          <button class="btn btn-sm" onclick="window._lmpatch.viewText('提议人设', ${proposal.id}, 'proposed')">查看</button>
+        </div>
+        <div class="compare-pane-body">${esc(proposal.proposed_persona)}</div>
+      </div>
+    </div>
+    <div class="detail-actions">
+      ${actionsHtml}
+    </div>
+  `;
+
+  // 绑定操作按钮
+  if (proposal.status === "pending") {
+    $("btn-approve")?.addEventListener("click", () => approveProposal(proposal.id));
+    $("btn-reroll")?.addEventListener("click", () => rerollProposal(proposal.id));
+    $("btn-reject")?.addEventListener("click", () => rejectProposal(proposal.id));
+  } else if (proposal.status === "stalled") {
+    $("btn-restart")?.addEventListener("click", () => restartProposal(proposal.id));
+  }
+}
+
+async function approveProposal(id) {
+  if (!confirm("确认通过该提案并写回人设？")) return;
+  try {
+    const resp = await api.post("proposal/approve", { id });
+    if (resp && resp.success) {
+      toast(resp.message || "已通过并写回", "success");
+      await loadProposals();
+      state.currentProposalId = null;
+      renderProposalDetail();
+    } else {
+      toast(resp?.error || "操作失败", "error");
+    }
+  } catch (e) {
+    toast(`操作失败: ${e.message}`, "error");
+  }
+}
+
+async function rejectProposal(id) {
+  const reason = prompt("拒绝理由（可选）:");
+  if (reason === null) return;
+  try {
+    const resp = await api.post("proposal/reject", { id, reason: reason || "" });
+    if (resp && resp.success) {
+      toast(resp.message || "已拒绝", "success");
+      await loadProposals();
+      state.currentProposalId = null;
+      renderProposalDetail();
+    } else {
+      toast(resp?.error || "操作失败", "error");
+    }
+  } catch (e) {
+    toast(`操作失败: ${e.message}`, "error");
+  }
+}
+
+async function rerollProposal(id) {
+  const reason = $("reroll-reason")?.value?.trim();
+  if (!reason) {
+    toast("请填写打回理由", "warning");
+    return;
+  }
+  try {
+    const btn = $("btn-reroll");
+    if (btn) btn.disabled = true;
+    const resp = await api.post("proposal/reroll", { id, reason });
+    if (resp && resp.success) {
+      toast(resp.message || "已重新提议", "success");
+      await loadProposals();
+    } else if (resp && resp.stalled) {
+      toast(resp.error || "已超过最大重议次数", "warning");
+      await loadProposals();
+    } else {
+      toast(resp?.error || "操作失败", "error");
+    }
+  } catch (e) {
+    toast(`操作失败: ${e.message}`, "error");
+  } finally {
+    const btn = $("btn-reroll");
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function restartProposal(id) {
+  if (!confirm("确认重启该提案？将清零重议计数并重新提议。")) return;
+  try {
+    const resp = await api.post("proposal/restart", { id });
+    if (resp && resp.success) {
+      toast(resp.message || "已重启", "success");
+      await loadProposals();
+    } else {
+      toast(resp?.error || "操作失败", "error");
+    }
+  } catch (e) {
+    toast(`操作失败: ${e.message}`, "error");
+  }
+}
+
+// ── Snapshots ───────────────────────────
+
+async function loadSnapshots() {
+  try {
+    const resp = await api.get("snapshots", {});
+    if (resp && resp.success) {
+      state.snapshots = resp.data || [];
+      renderSnapshots();
+    }
+  } catch (e) {
+    toast(`加载快照失败: ${e.message}`, "error");
+  }
+}
+
+function renderSnapshots() {
+  const tbody = $("snapshot-tbody");
+  if (state.snapshots.length === 0) {
+    tbody.innerHTML =
+      '<tr><td colspan="5" style="text-align:center;color:var(--text-faint);padding:40px">暂无快照</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = state.snapshots
+    .map((s) => {
+      const desc = s.change_description || "(无说明)";
+      return `
+      <tr>
+        <td class="col-id">#${s.id}</td>
+        <td>${esc(s.persona_name)}</td>
+        <td style="color:var(--text-dim)">${esc(desc)}</td>
+        <td class="col-time">${esc(s.created_at)}</td>
+        <td class="col-action">
+          <button class="btn btn-sm" onclick="window._lmpatch.viewSnapshot(${s.id})">查看</button>
+          <button class="btn btn-danger btn-sm" onclick="window._lmpatch.rollback(${s.id})">回滚</button>
+        </td>
+      </tr>
+    `;
+    })
+    .join("");
+}
+
+function viewSnapshot(id) {
+  const snapshot = state.snapshots.find((s) => s.id === id);
+  if (!snapshot) return;
+  showModal(
+    `快照 #${snapshot.id} - ${snapshot.persona_name}`,
+    esc(snapshot.snapshot_text)
+  );
+}
+
+async function rollbackSnapshot(id) {
+  if (!confirm(`确认回滚到快照 #${id}？当前人设将保存为新快照以便撤销。`)) return;
+  try {
+    const resp = await api.post("snapshot/rollback", { id });
+    if (resp && resp.success) {
+      toast(resp.message || "已回滚", "success");
+      await loadSnapshots();
+    } else {
+      toast(resp?.error || "回滚失败", "error");
+    }
+  } catch (e) {
+    toast(`回滚失败: ${e.message}`, "error");
+  }
+}
+
+// ── Compact logs ────────────────────────
+
+async function loadLogs() {
+  try {
+    const resp = await api.get("compact-log", {});
+    if (resp && resp.success) {
+      state.logs = resp.data || [];
+      renderLogs();
+    }
+  } catch (e) {
+    toast(`加载日志失败: ${e.message}`, "error");
+  }
+}
+
+function renderLogs() {
+  const tbody = $("log-tbody");
+  if (state.logs.length === 0) {
+    tbody.innerHTML =
+      '<tr><td colspan="5" style="text-align:center;color:var(--text-faint);padding:40px">暂无压缩日志</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = state.logs
+    .map((log) => {
+      return `
+      <tr>
+        <td class="col-id">#${log.id}</td>
+        <td>${esc(log.persona_id)}</td>
+        <td style="color:var(--red)">${log.deleted_count} 条</td>
+        <td style="color:var(--green)">${log.created_count} 条</td>
+        <td class="col-time">${esc(log.created_at)}</td>
+      </tr>
+    `;
+    })
+    .join("");
+}
+
+// ── Status ──────────────────────────────
+
+async function loadStatus() {
+  const grid = $("status-grid");
+  grid.innerHTML =
+    '<div class="loading"><span class="spinner"></span>加载中...</div>';
+  try {
+    const resp = await api.get("status", {});
+    if (resp && resp.success) {
+      state.status = resp.data;
+      renderStatus();
+    }
+  } catch (e) {
+    grid.innerHTML = `<div class="empty-state">加载失败: ${esc(
+      e.message
+    )}</div>`;
+  }
+}
+
+function renderStatus() {
+  const s = state.status;
+  if (!s) return;
+
+  const lmDot = s.lm_available
+    ? '<span class="status-dot on"></span>已连接'
+    : '<span class="status-dot off"></span>未连接';
+  const schedDot = s.scheduler_running
+    ? '<span class="status-dot on"></span>运行中'
+    : '<span class="status-dot off"></span>已停止';
+  const patchDot = s.patch_enabled
+    ? '<span class="status-dot on"></span>已启用'
+    : '<span class="status-dot off"></span>已禁用';
+  const compactDot = s.compact_enabled
+    ? '<span class="status-dot on"></span>已启用'
+    : '<span class="status-dot off"></span>已禁用';
+
+  $("status-grid").innerHTML = `
+    <div class="card status-item">
+      <span class="status-label">LivingMemory 连接</span>
+      <span class="status-value">${lmDot}</span>
+    </div>
+    <div class="card status-item">
+      <span class="status-label">调度器</span>
+      <span class="status-value">${schedDot}</span>
+    </div>
+    <div class="card status-item">
+      <span class="status-label">人设补丁</span>
+      <span class="status-value">${patchDot}</span>
+    </div>
+    <div class="card status-item">
+      <span class="status-label">记忆压缩</span>
+      <span class="status-value">${compactDot}</span>
+    </div>
+    <div class="card status-item">
+      <span class="status-label">补丁间隔</span>
+      <span class="status-value">${s.patch_interval_hours} 小时</span>
+    </div>
+    <div class="card status-item">
+      <span class="status-label">压缩检查间隔</span>
+      <span class="status-value">${s.compact_interval_hours} 小时</span>
+    </div>
+  `;
+
+  // 更新 footer
+  $("footer-info").textContent = s.lm_available
+    ? "LivingMemory 已连接"
+    : "LivingMemory 未连接";
+}
+
+// ── Trigger actions ─────────────────────
+
+async function triggerPatch() {
+  const btn = $("btn-trigger-patch");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "执行中...";
+  }
+  try {
+    const resp = await api.post("trigger/patch", {});
+    if (resp && resp.success) {
+      toast(resp.message || "已触发", "success");
+      await loadProposals();
+    } else {
+      toast(resp?.error || "触发失败", "error");
+    }
+  } catch (e) {
+    toast(`触发失败: ${e.message}`, "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "手动触发补丁";
+    }
+  }
+}
+
+async function triggerCompact() {
+  const btn = $("btn-trigger-compact");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "执行中...";
+  }
+  try {
+    const resp = await api.post("trigger/compact", {});
+    if (resp && resp.success) {
+      toast(resp.message || "已触发", "success");
+      await loadLogs();
+    } else {
+      toast(resp?.error || "触发失败", "error");
+    }
+  } catch (e) {
+    toast(`触发失败: ${e.message}`, "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "手动触发压缩";
+    }
+  }
+}
+
+// ── 暴露给内联 onclick 的接口 ───────────
+
+window._lmpatch = {
+  viewText(title, proposalId, field) {
+    const p = state.proposals.find((x) => x.id === proposalId);
+    if (!p) return;
+    const text = field === "original" ? p.original_persona : p.proposed_persona;
+    showModal(title, esc(text));
+  },
+  viewSnapshot,
+  rollback: rollbackSnapshot,
+};
+
+// ── Init ────────────────────────────────
+
+async function init() {
+  // 绑定导航
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    item.addEventListener("click", () => switchPage(item.dataset.page));
+  });
+
+  // 绑定过滤器
+  document.querySelectorAll("#proposal-filters .filter-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document
+        .querySelectorAll("#proposal-filters .filter-btn")
+        .forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      state.proposalFilter = btn.dataset.status;
+      loadProposals();
+    });
+  });
+
+  // 绑定刷新按钮
+  $("btn-refresh-proposals")?.addEventListener("click", loadProposals);
+  $("btn-refresh-snapshots")?.addEventListener("click", loadSnapshots);
+  $("btn-refresh-logs")?.addEventListener("click", loadLogs);
+  $("btn-refresh-status")?.addEventListener("click", loadStatus);
+
+  // 绑定触发按钮
+  $("btn-trigger-patch")?.addEventListener("click", triggerPatch);
+  $("btn-trigger-compact")?.addEventListener("click", triggerCompact);
+
+  // 等待 Bridge 就绪
+  try {
+    await api.ready();
+  } catch (e) {
+    console.warn("Bridge 初始化警告:", e);
+  }
+
+  // 加载首页数据
+  await loadProposals();
+
+  // 同时加载状态更新 footer
+  try {
+    const resp = await api.get("status", {});
+    if (resp && resp.success) {
+      state.status = resp.data;
+      $("footer-info").textContent = state.status.lm_available
+        ? "LivingMemory 已连接"
+        : "LivingMemory 未连接";
+    }
+  } catch (e) {
+    $("footer-info").textContent = "状态未知";
+  }
+}
+
+init();

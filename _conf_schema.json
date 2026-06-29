@@ -1,0 +1,64 @@
+{
+  "llm_provider_id": {
+    "description": "LLM 提供商",
+    "type": "string",
+    "default": "",
+    "hint": "用于人设补丁与记忆压缩的 LLM 提供商。留空则使用 AstrBot 默认提供商。",
+    "_special": "select_provider",
+    "obvious_hint": true
+  },
+  "persona_patch_enable": {
+    "description": "启用人设补丁",
+    "type": "bool",
+    "default": true,
+    "hint": "启用后，将周期性读取 LivingMemory 新增记忆，由 LLM 判断是否需要更新人设，并在 WebUI 中提交审批。"
+  },
+  "persona_patch_interval_hours": {
+    "description": "人设补丁调度间隔（小时）",
+    "type": "int",
+    "default": 168,
+    "hint": "多久检查一次是否有需要写入人设的新记忆。默认 168 小时（一周）。人设一般不轻易改动，出现重大事件才需调整。"
+  },
+  "persona_patch_max_memories": {
+    "description": "每次读取最大记忆条数",
+    "type": "int",
+    "default": 50,
+    "hint": "每个补丁周期、每个 persona 最多读取多少条新增记忆。过大会增加 token 消耗。"
+  },
+  "persona_patch_max_reroll": {
+    "description": "打回重提议最大轮次",
+    "type": "int",
+    "default": 3,
+    "hint": "审批时打回（附理由）后，LLM 重新提议的最大次数。超过则标记为无法收敛。"
+  },
+  "persona_patch_enable_rollback": {
+    "description": "人设版本快照",
+    "type": "bool",
+    "default": true,
+    "hint": "每次写回人设前保存一份快照，支持在 WebUI 回滚到历史版本。"
+  },
+  "memory_compact_enable": {
+    "description": "启用记忆压缩",
+    "type": "bool",
+    "default": true,
+    "hint": "启用后，将自动把低重要性记忆压缩成更少的摘要记忆，重新评估重要性。"
+  },
+  "memory_compact_importance_threshold": {
+    "description": "压缩重要性阈值",
+    "type": "float",
+    "default": 0.5,
+    "hint": "重要性低于此值的记忆才会被纳入压缩。建议高于 LivingMemory 的清理阈值（默认 0.3），以在记忆被删除前抢救信息。"
+  },
+  "memory_compact_min_count": {
+    "description": "触发压缩的最小记忆条数",
+    "type": "int",
+    "default": 10,
+    "hint": "低重要性记忆累积到多少条才触发一次压缩。"
+  },
+  "memory_compact_check_interval_hours": {
+    "description": "压缩检查间隔（小时）",
+    "type": "int",
+    "default": 24,
+    "hint": "多久检查一次是否有足够的低重要性记忆需要压缩。"
+  }
+}
