@@ -129,13 +129,23 @@ function applyTheme(theme) {
 }
 
 function initTheme() {
-  const saved = localStorage.getItem("theme") || "light";
+  // iframe 被 sandbox 时 localStorage 可能不可用，需要 try/catch 保护
+  let saved = "light";
+  try {
+    saved = localStorage.getItem("theme") || "light";
+  } catch (e) {
+    console.warn("[LMPatch] 无法读取 localStorage:", e);
+  }
   applyTheme(saved);
   $("theme-toggle")?.addEventListener("click", () => {
     const current = document.documentElement.dataset.theme || "light";
     const next = current === "dark" ? "light" : "dark";
     applyTheme(next);
-    localStorage.setItem("theme", next);
+    try {
+      localStorage.setItem("theme", next);
+    } catch (e) {
+      console.warn("[LMPatch] 无法写入 localStorage:", e);
+    }
   });
 }
 
@@ -838,8 +848,12 @@ function pollInitState() {
 // ── Init (应用入口) ────────────────────
 
 async function init() {
-  // 初始化主题
-  initTheme();
+  // 初始化主题（localStorage 在 sandbox 中可能不可用，已在 initTheme 内部处理）
+  try {
+    initTheme();
+  } catch (e) {
+    console.warn("[LMPatch] 主题初始化失败:", e);
+  }
 
   // 绑定导航
   document.querySelectorAll(".nav-item[data-page]").forEach((item) => {
@@ -878,11 +892,15 @@ async function init() {
   try {
     await api.ready();
   } catch (e) {
-    console.warn("Bridge 初始化警告:", e);
+    console.warn("[LMPatch] Bridge 初始化警告:", e);
   }
 
   // 加载首页数据
-  await loadProposals();
+  try {
+    await loadProposals();
+  } catch (e) {
+    console.error("[LMPatch] 首页数据加载失败:", e);
+  }
 
   // 同时加载状态更新 footer
   try {
@@ -896,4 +914,13 @@ async function init() {
   }
 }
 
-init();
+// 捕获 init 的未处理异常，避免静默卡在"加载中"
+init().catch((e) => {
+  console.error("[LMPatch] 初始化失败:", e);
+  const list = $("proposal-list");
+  if (list) {
+    list.innerHTML = `<div class="empty-state">初始化失败: ${esc(
+      e.message || String(e)
+    )}</div>`;
+  }
+});
