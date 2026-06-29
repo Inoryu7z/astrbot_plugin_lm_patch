@@ -22,6 +22,9 @@ from .store import Store
 
 # 记忆压缩初始化的批次大小（硬编码，用户确认）
 INIT_COMPACT_BATCH = 10
+# 初始化时单 persona 连续压缩失败的最大次数，超过则跳过该 persona 进入下一个
+# 避免 LLM 持续失败时死循环读取相同批次记忆
+_INIT_MAX_CONSECUTIVE_FAILURES = 3
 
 
 class MemoryCompactor:
@@ -256,6 +259,7 @@ class MemoryCompactor:
                 )
 
                 # 循环压缩当前 persona 的低重要性记忆
+                consecutive_failures = 0
                 while True:
                     state = await self.store.get_init_state()
                     if state.get("status") != "running":
@@ -276,14 +280,24 @@ class MemoryCompactor:
 
                     success = await self._compact_memories(persona_id, memories)
                     if success:
+                        consecutive_failures = 0
                         total_compacted += len(memories)
                         await self.store.update_init_state(
                             total_compacted=total_compacted,
                         )
                     else:
+                        consecutive_failures += 1
                         logger.warning(
-                            f"[LMPatch] persona '{persona_id}' 一批压缩失败，跳过该批继续"
+                            f"[LMPatch] persona '{persona_id}' 一批压缩失败"
+                            f"（连续第 {consecutive_failures} 次），跳过该批继续"
                         )
+                        # 连续失败超过阈值时跳过当前 persona，避免死循环读取相同批次
+                        if consecutive_failures >= _INIT_MAX_CONSECUTIVE_FAILURES:
+                            logger.warning(
+                                f"[LMPatch] persona '{persona_id}' 连续压缩失败 "
+                                f"{consecutive_failures} 次，跳过该 persona 进入下一个"
+                            )
+                            break
 
             await self.store.complete_init(0, total_compacted)
             logger.info(f"[LMPatch] 记忆压缩初始化完成，共压缩 {total_compacted} 条记忆")

@@ -186,15 +186,16 @@ class PersonaPatcher:
         return True
 
     def _format_memories(self, memories: list[dict]) -> str:
-        """格式化记忆列表为 LLM 可读文本。"""
+        """格式化记忆列表为 LLM 可读文本，包含来源标记。"""
         lines = []
         for m in memories:
             text = m.get("text", "")
             meta = m.get("metadata", {}) or {}
             importance = meta.get("importance", "?")
             created = m.get("created_at", "")
+            source = meta.get("source", "unknown")
             lines.append(
-                f"[#{m.get('id', '?')}][重要性:{importance}][{created}] {text}"
+                f"[#{m.get('id', '?')}][来源:{source}][重要性:{importance}][{created}] {text}"
             )
         return "\n".join(lines)
 
