@@ -177,6 +177,7 @@ class WebUI:
         - 失败: {"status": "error", "message": M} → bridge 抛出 Error(M)
 
         内部代码使用 {success: true/false, ...} 格式，此方法负责转换。
+        若 result 含 "data" 字段，则用其作为外层 data（避免双重包装）。
         stalled（无法收敛）视为"软成功"：操作已完成但提案已标记为 stalled，
         前端需要读取 stalled 字段，因此放在 data 中返回而非作为错误。
         """
@@ -184,6 +185,10 @@ class WebUI:
             return {"status": "ok", "data": result}
 
         if result.get("success") or result.get("stalled"):
+            # 优先使用 result["data"] 作为外层 data，避免双重包装
+            if "data" in result:
+                return {"status": "ok", "data": result["data"]}
+            # 无 data 字段时，把其余字段作为 data 返回
             data = {k: v for k, v in result.items() if k != "success"}
             return {"status": "ok", "data": data}
 
