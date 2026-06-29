@@ -71,6 +71,12 @@ class MemoryCompactor:
             logger.warning("[LMPatch] LivingMemory 不可用，跳过记忆压缩周期")
             return 0
 
+        # 初始化进行中时跳过正常周期，避免与初始化流程冲突
+        init_state = await self.store.get_init_state()
+        if init_state.get("status") == "running":
+            logger.info("[LMPatch] 初始化进行中，跳过记忆压缩周期")
+            return 0
+
         persona_ids = await self.lm_client.get_all_persona_ids()
         if not persona_ids:
             logger.info("[LMPatch] 未发现任何 persona_id，跳过记忆压缩周期")

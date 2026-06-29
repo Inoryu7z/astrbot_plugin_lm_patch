@@ -779,15 +779,17 @@ function renderInitState(s) {
   const progressHtml = isRunning
     ? s.type === "persona"
       ? `<div class="init-progress">
-           <div class="init-progress-item"><span class="init-label">当前 Persona</span><span class="init-value">${esc(s.current_persona_id || "-")}</span></div>
-           <div class="init-progress-item"><span class="init-label">当前迭代</span><span class="init-value">第 ${s.current_batch} 批</span></div>
+           <div class="init-progress-item"><span class="init-label">当前 Persona</span><span class="init-value">${esc(s.current_persona_id || "准备中...")}</span></div>
+           <div class="init-progress-item"><span class="init-label">当前迭代</span><span class="init-value">${s.current_batch > 0 ? "第 " + s.current_batch + " 批" : "准备中..."}</span></div>
            <div class="init-progress-item"><span class="init-label">Persona 进度</span><span class="init-value">${s.current_persona_idx + 1} / ${s.total_personas}</span></div>
            <div class="init-progress-item"><span class="init-label">已处理记忆</span><span class="init-value">${s.total_processed} 条</span></div>
+           ${!s.current_persona_id ? '<div class="init-summary">⏳ 正在分析第一批记忆，请稍候...</div>' : ""}
          </div>`
       : `<div class="init-progress">
-           <div class="init-progress-item"><span class="init-label">当前 Persona</span><span class="init-value">${esc(s.current_persona_id || "-")}</span></div>
+           <div class="init-progress-item"><span class="init-label">当前 Persona</span><span class="init-value">${esc(s.current_persona_id || "准备中...")}</span></div>
            <div class="init-progress-item"><span class="init-label">Persona 进度</span><span class="init-value">${s.current_persona_idx + 1} / ${s.total_personas}</span></div>
            <div class="init-progress-item"><span class="init-label">已压缩记忆</span><span class="init-value">${s.total_compacted} 条</span></div>
+           ${!s.current_persona_id ? '<div class="init-summary">⏳ 正在启动压缩任务...</div>' : ""}
          </div>`
     : "";
 
@@ -831,17 +833,29 @@ async function startPersonaInit() {
     btn.disabled = true;
     btn.textContent = "启动中...";
   }
+  // 启动期间轮询 init/state，让用户看到实时进度（LLM 分析第一批记忆可能需要 10-30 秒）
+  pollInitState();
   try {
     const resp = await api.post("init/persona/start", {});
+    // POST 完成（第一个提案已创建或无需初始化），停止轮询
+    if (_initPollTimer) {
+      clearInterval(_initPollTimer);
+      _initPollTimer = null;
+    }
     if (resp.completed) {
       toast(resp.message || "无需初始化，已全部处理", "success");
     } else {
-      toast(resp.message || "初始化已启动", "success");
+      toast(resp.message || "已生成第一个提案，等待审批", "success");
       // 跳转到提案页面查看第一个提案
       switchPage("proposals");
     }
     await loadInitState();
   } catch (e) {
+    // 出错时也停止轮询
+    if (_initPollTimer) {
+      clearInterval(_initPollTimer);
+      _initPollTimer = null;
+    }
     toast(`启动失败: ${e.message}`, "error");
   } finally {
     if (btn) {
