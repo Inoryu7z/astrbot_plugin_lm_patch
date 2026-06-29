@@ -857,13 +857,116 @@ body {
 .compare-pane-body {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-4);
+  padding: 0;
   font-family: "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
   font-size: 12px;
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-primary);
+}
+
+/* ----- Diff line highlighting ---------------------------------- */
+.diff-line {
+  display: flex;
+  align-items: flex-start;
+  padding: 0 var(--space-4);
+  min-height: 1.7em;
+  border-left: 3px solid transparent;
+}
+
+.compare-pane-plaintext {
+  padding: var(--space-4);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-marker {
+  flex-shrink: 0;
+  width: 16px;
+  color: var(--text-tertiary);
+  user-select: none;
+  text-align: center;
+}
+
+.diff-text {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-line-common {
+  background: transparent;
+}
+
+.diff-line-added {
+  background: var(--success-light);
+  border-left-color: var(--success);
+}
+
+.diff-line-added .diff-marker {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.diff-line-removed {
+  background: var(--danger-light);
+  border-left-color: var(--danger);
+}
+
+.diff-line-removed .diff-marker {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.diff-line-placeholder {
+  background: var(--bg-hover);
+  opacity: 0.5;
+}
+
+/* inline 逐字高亮（预留，当前未启用） */
+.diff-inline-common {
+  color: inherit;
+}
+
+.diff-inline-added {
+  background: var(--success);
+  color: #fff;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.diff-inline-removed {
+  background: var(--danger);
+  color: #fff;
+  text-decoration: line-through;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* diff 统计 */
+.diff-stats {
+  font-family: "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+}
+
+.diff-stat-added {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.diff-stat-removed {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.diff-stat-modified {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.diff-stat-common {
+  color: var(--text-tertiary);
 }
 
 /* ----- Detail Actions ------------------------------------------ */

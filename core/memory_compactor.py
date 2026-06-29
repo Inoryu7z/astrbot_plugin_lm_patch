@@ -119,13 +119,31 @@ class MemoryCompactor:
         """对给定的一批低重要性记忆执行压缩。
 
         流程：先 add 新摘要全部成功后再 delete 旧记忆（避免删除后新增失败导致数据丢失）。
+        输出格式与 LivingMemory 的记忆格式对齐：第一人称、保留会话ID、
+        metadata 包含 persona_summary/canonical_summary/topics/key_facts 等。
         返回是否成功执行了压缩。
         """
+        from collections import Counter
+        from datetime import datetime
+
+        # 获取人格系统提示词，为 LLM 提供人格上下文
+        persona_text = ""
+        try:
+            persona = await self.context.persona_manager.get_persona(persona_id)
+            persona_text = persona.system_prompt or ""
+        except Exception as e:
+            logger.debug(
+                f"[LMPatch] 获取 persona '{persona_id}' 系统提示词失败，使用空文本: {e}"
+            )
+
         # 构造记忆文本
         memories_text = self._format_memories(memories)
 
         # 调用 LLM 压缩
+        current_date = datetime.now().strftime("%Y-%m-%d %H:%M")
         user_prompt = MEMORY_COMPACT_USER_TEMPLATE.format(
+            current_date=current_date,
+            persona_text=persona_text,
             memory_count=len(memories),
             memories_text=memories_text,
         )
@@ -155,37 +173,112 @@ class MemoryCompactor:
         original_ids = [m["id"] for m in memories]
         created_ids: list[int] = []
 
+        # 收集所有来源记忆的会话ID，用于为新摘要选择 session_id
+        source_session_list: list[str] = []
+        for m in memories:
+            sid = (m.get("metadata", {}) or {}).get("session_id")
+            if sid:
+                source_session_list.append(sid)
+
         for idx, summary in enumerate(summaries):
             if not isinstance(summary, dict):
                 continue
-            content = summary.get("content", "").strip()
-            if not content:
+
+            # summary 字段（第一人称人格风格摘要）
+            summary_text = str(summary.get("summary", "")).strip()
+            if not summary_text:
                 continue
 
+            # 构建 canonical_summary（事实导向、风格中性，用于检索）
+            # 与 LivingMemory 的 _build_storage_format 保持一致
+            key_facts_raw = summary.get("key_facts", [])
+            if not isinstance(key_facts_raw, list):
+                key_facts_raw = [str(key_facts_raw)] if key_facts_raw else []
+            key_facts = [str(f) for f in key_facts_raw[:5] if f]
+
+            canonical_parts = [summary_text]
+            if key_facts:
+                canonical_parts.append("；".join(key_facts))
+            canonical_summary = " | ".join(canonical_parts)
+
+            if not canonical_summary.strip():
+                continue
+
+            # 重要性
             importance = summary.get("importance", 0.5)
             try:
                 importance = float(importance)
             except (TypeError, ValueError):
                 importance = 0.5
-            # 限制重要性范围
             importance = max(0.0, min(1.0, importance))
 
+            # source_count
             source_count = summary.get("source_count", 0)
             try:
                 source_count = int(source_count)
             except (TypeError, ValueError):
                 source_count = 0
 
+            # LLM 输出的 source_session_ids
+            llm_session_ids = summary.get("source_session_ids", [])
+            if not isinstance(llm_session_ids, list):
+                llm_session_ids = []
+
+            # topics
+            topics_raw = summary.get("topics", [])
+            if not isinstance(topics_raw, list):
+                topics_raw = [str(topics_raw)] if topics_raw else []
+            topics = [str(t) for t in topics_raw[:5] if t]
+
+            # participants
+            participants = summary.get("participants", [])
+            if not isinstance(participants, list):
+                participants = [str(participants)] if participants else []
+            participants = [str(p) for p in participants if p]
+
+            # sentiment
+            sentiment = str(summary.get("sentiment", "neutral")).lower()
+            if sentiment not in ("positive", "neutral", "negative"):
+                sentiment = "neutral"
+
+            # 判断交互类型
+            interaction_type = "group_chat" if participants else "private_chat"
+
+            # 为新摘要选择 session_id：
+            # 优先使用 LLM 输出的 source_session_ids 中出现最多的，
+            # 回退到来源记忆中 session_id 出现最多的
+            session_candidates = (
+                [str(s) for s in llm_session_ids if s]
+                if llm_session_ids
+                else source_session_list
+            )
+            if session_candidates:
+                new_session_id = Counter(session_candidates).most_common(1)[0][0]
+            else:
+                new_session_id = None
+
+            # 构建 metadata，与 LivingMemory 的格式对齐
             metadata = {
                 "importance": importance,
                 "source_count": source_count,
                 "source_memory_ids": original_ids,
                 "summary_reason": summary.get("reason", ""),
+                # LivingMemory 对齐字段
+                "topics": topics,
+                "key_facts": key_facts,
+                "sentiment": sentiment,
+                "interaction_type": interaction_type,
+                "canonical_summary": canonical_summary,
+                "persona_summary": summary_text,
+                "summary_schema_version": "v2",
+                "source_session_ids": [str(s) for s in llm_session_ids if s],
             }
+            if participants:
+                metadata["participants"] = participants
 
             new_id = await self.lm_client.add_memory(
-                content=content,
-                session_id=None,
+                content=canonical_summary,
+                session_id=new_session_id,
                 persona_id=persona_id,
                 importance=importance,
                 metadata=metadata,
@@ -322,14 +415,23 @@ class MemoryCompactor:
         return {"success": True, "message": "初始化取消请求已发送，后台任务将在当前批次完成后停止"}
 
     def _format_memories(self, memories: list[dict]) -> str:
-        """格式化记忆列表为 LLM 可读文本。"""
+        """格式化记忆列表为 LLM 可读文本，包含会话ID和人格风格摘要。
+
+        优先使用 metadata.persona_summary（第一人称人格风格摘要），
+        回退到 text（canonical_summary，中性检索版本）。
+        """
         lines = []
         for m in memories:
-            text = m.get("text", "")
             meta = m.get("metadata", {}) or {}
             importance = meta.get("importance", "?")
             created = m.get("created_at", "")
+            session_id = meta.get("session_id", "未知")
+            interaction_type = meta.get("interaction_type", "unknown")
+            # 优先使用 persona_summary（第一人称人格风格），回退到 text
+            persona_summary = meta.get("persona_summary", "")
+            text = persona_summary if persona_summary else m.get("text", "")
             lines.append(
-                f"[#{m.get('id', '?')}][重要性:{importance}][{created}] {text}"
+                f"[#{m.get('id', '?')}][会话:{session_id}]"
+                f"[重要性:{importance}][类型:{interaction_type}][{created}] {text}"
             )
         return "\n".join(lines)

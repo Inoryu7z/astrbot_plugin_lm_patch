@@ -48,6 +48,7 @@ const state = {
   snapshots: [],
   logs: [],
   status: null,
+  diffView: true,
 };
 
 // ── Utils ───────────────────────────────
@@ -61,6 +62,205 @@ function esc(text) {
   const div = document.createElement("div");
   div.textContent = String(text);
   return div.innerHTML;
+}
+
+// ── Diff (line-level, LCS-based, split view) ───────────────────────
+
+// 视图模式：state.diffView（true=diff高亮，false=纯文本），默认在 state 中初始化为 true
+
+// 计算两段文本的逐行 diff，返回对齐的行数组
+// 每行: {type: "common"|"removed"|"added", left: string|null, right: string|null}
+function computeLineDiff(originalText, proposedText) {
+  const a = (originalText || "").split("\n");
+  const b = (proposedText || "").split("\n");
+  const n = a.length, m = b.length;
+
+  // LCS DP 表（行数通常 < 200，O(n*m) 可接受）
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      if (a[i] === b[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
+      else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  // 回溯生成对齐行
+  const rows = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      rows.push({ type: "common", left: a[i], right: b[j] });
+      i++; j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      rows.push({ type: "removed", left: a[i], right: null });
+      i++;
+    } else {
+      rows.push({ type: "added", left: null, right: b[j] });
+      j++;
+    }
+  }
+  while (i < n) {
+    rows.push({ type: "removed", left: a[i], right: null });
+    i++;
+  }
+  while (j < m) {
+    rows.push({ type: "added", left: null, right: b[j] });
+    j++;
+  }
+  return rows;
+}
+
+// 计算两段文本的字符级 inline diff，返回片段数组
+// 每片: {type: "common"|"removed"|"added", text: string}
+function computeInlineDiff(oldStr, newStr) {
+  const a = Array.from(oldStr || "");
+  const b = Array.from(newStr || "");
+  const n = a.length, m = b.length;
+  if (n === 0 && m === 0) return [];
+  if (n === 0) return [{ type: "added", text: newStr }];
+  if (m === 0) return [{ type: "removed", text: oldStr }];
+
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      if (a[i] === b[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
+      else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const segments = [];
+  let i = 0, j = 0;
+  let commonBuf = "";
+  const flushCommon = () => {
+    if (commonBuf) { segments.push({ type: "common", text: commonBuf }); commonBuf = ""; }
+  };
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      commonBuf += a[i];
+      i++; j++;
+    } else {
+      flushCommon();
+      let remBuf = "", addBuf = "";
+      while (i < n && j < m && a[i] !== b[j]) {
+        if (dp[i + 1][j] >= dp[i][j + 1]) { remBuf += a[i]; i++; }
+        else { addBuf += b[j]; j++; }
+      }
+      if (remBuf) segments.push({ type: "removed", text: remBuf });
+      if (addBuf) segments.push({ type: "added", text: addBuf });
+    }
+  }
+  flushCommon();
+  while (i < n) { segments.push({ type: "removed", text: a[i] }); i++; }
+  while (j < m) { segments.push({ type: "added", text: b[j] }); j++; }
+  return segments;
+}
+
+// 将 inline diff 片段渲染为 HTML（用于"修改"行对的逐字高亮）
+function renderInlineDiffHtml(segments, side) {
+  // side="left": 显示 common + removed；side="right": 显示 common + added
+  return segments.map(seg => {
+    if (seg.type === "common") {
+      return `<span class="diff-inline-common">${esc(seg.text)}</span>`;
+    }
+    if (seg.type === "removed" && side === "left") {
+      return `<span class="diff-inline-removed">${esc(seg.text)}</span>`;
+    }
+    if (seg.type === "added" && side === "right") {
+      return `<span class="diff-inline-added">${esc(seg.text)}</span>`;
+    }
+    // 另一侧的片断在当前 pane 不显示
+    return "";
+  }).join("");
+}
+
+// 渲染 diff 面板 HTML
+// rows: computeLineDiff 的返回值（会自动合并 modified 行对）
+// side: "left" | "right"
+function renderDiffPane(rows, side) {
+  // 合并连续的 removed+added 为 modified 行对，启用逐字高亮
+  const mergedRows = mergeModifiedPairs(rows);
+  const html = mergedRows.map(row => {
+    // modified 行：两侧都有内容，用 inline diff 逐字高亮
+    if (row.type === "modified") {
+      const segments = computeInlineDiff(row.left, row.right);
+      const inlineHtml = renderInlineDiffHtml(segments, side);
+      const cls = side === "left" ? "diff-line-removed" : "diff-line-added";
+      const marker = side === "left" ? "~" : "~";
+      return `<div class="diff-line ${cls}"><span class="diff-marker">${marker}</span><span class="diff-text">${inlineHtml}</span></div>`;
+    }
+
+    const text = side === "left" ? row.left : row.right;
+
+    // 对侧有内容但本侧为 null → 占位行（保持两栏对齐）
+    if (text === null) {
+      return `<div class="diff-line diff-line-placeholder"><span class="diff-marker"> </span></div>`;
+    }
+
+    let cls, marker;
+    if (row.type === "common") {
+      cls = "diff-line-common";
+      marker = " ";
+    } else if (row.type === "removed" && side === "left") {
+      cls = "diff-line-removed";
+      marker = "-";
+    } else if (row.type === "added" && side === "right") {
+      cls = "diff-line-added";
+      marker = "+";
+    } else {
+      cls = "diff-line-placeholder";
+      marker = " ";
+    }
+    return `<div class="diff-line ${cls}"><span class="diff-marker">${marker}</span><span class="diff-text">${esc(text)}</span></div>`;
+  });
+  return html.join("");
+}
+
+// 统计 diff 行数
+function diffStats(rows) {
+  let added = 0, removed = 0, common = 0, modified = 0;
+  for (const r of rows) {
+    if (r.type === "added") added++;
+    else if (r.type === "removed") removed++;
+    else if (r.type === "modified") modified++;
+    else common++;
+  }
+  return { added, removed, common, modified };
+}
+
+// 将连续的 removed+added 行对合并为 "modified" 行，用于逐字高亮
+// 纯 removed（无配对 added）保持为 removed，纯 added 保持为 added
+function mergeModifiedPairs(rows) {
+  const result = [];
+  let i = 0;
+  while (i < rows.length) {
+    if (rows[i].type === "removed" || rows[i].type === "added") {
+      // 收集连续的非 common 行
+      const removedTexts = [];
+      const addedTexts = [];
+      while (i < rows.length && (rows[i].type === "removed" || rows[i].type === "added")) {
+        if (rows[i].type === "removed") removedTexts.push(rows[i].left);
+        else addedTexts.push(rows[i].right);
+        i++;
+      }
+      // 贪心配对：每对 removed+added 合并为 modified
+      const pairCount = Math.min(removedTexts.length, addedTexts.length);
+      for (let k = 0; k < pairCount; k++) {
+        result.push({ type: "modified", left: removedTexts[k], right: addedTexts[k] });
+      }
+      // 多余的 removed
+      for (let k = pairCount; k < removedTexts.length; k++) {
+        result.push({ type: "removed", left: removedTexts[k], right: null });
+      }
+      // 多余的 added
+      for (let k = pairCount; k < addedTexts.length; k++) {
+        result.push({ type: "added", left: null, right: addedTexts[k] });
+      }
+    } else {
+      result.push(rows[i]);
+      i++;
+    }
+  }
+  return result;
 }
 
 function toast(message, type = "info") {
@@ -378,6 +578,26 @@ function renderProposalDetail() {
       )}</div>`
     : "";
 
+  // 计算 diff
+  const diffRows = computeLineDiff(proposal.original_persona, proposal.proposed_persona);
+  const mergedRows = mergeModifiedPairs(diffRows);
+  const stats = diffStats(mergedRows);
+
+  // 根据视图模式决定渲染内容
+  let leftBody, rightBody;
+  if (state.diffView) {
+    leftBody = renderDiffPane(diffRows, "left");
+    rightBody = renderDiffPane(diffRows, "right");
+  } else {
+    leftBody = `<div class="compare-pane-plaintext">${esc(proposal.original_persona)}</div>`;
+    rightBody = `<div class="compare-pane-plaintext">${esc(proposal.proposed_persona)}</div>`;
+  }
+
+  // diff 统计信息
+  const diffStatsHtml = state.diffView
+    ? `<span class="diff-stats">变更: <span class="diff-stat-removed">-${stats.removed}</span> <span class="diff-stat-modified">~${stats.modified}</span> <span class="diff-stat-added">+${stats.added}</span> <span class="diff-stat-common">=${stats.common}</span></span>`
+    : "";
+
   container.innerHTML = `
     <div class="detail-header">
       <div class="detail-persona">${esc(proposal.persona_name)}</div>
@@ -385,12 +605,14 @@ function renderProposalDetail() {
         proposal.change_description || "(无变更说明)"
       )}</div>
       ${aspectsHtml}
-      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text-tertiary)">
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text-tertiary);flex-wrap:wrap">
         ${statusBadge(proposal.status)}
         ${initInfo}
         <span>· 创建于 ${esc(proposal.created_at)}</span>
         <span>· Persona ID: ${esc(proposal.persona_id)}</span>
         ${rerollInfo}
+        ${diffStatsHtml}
+        <button class="btn btn-sm" id="btn-toggle-diff">${state.diffView ? "切换纯文本" : "切换 Diff 视图"}</button>
       </div>
       ${rejectionHtml}
     </div>
@@ -400,20 +622,26 @@ function renderProposalDetail() {
           <span>原始人设</span>
           <button class="btn btn-sm" onclick="window._lmpatch.viewText('原始人设', ${proposal.id}, 'original')">查看</button>
         </div>
-        <div class="compare-pane-body">${esc(proposal.original_persona)}</div>
+        <div class="compare-pane-body">${leftBody}</div>
       </div>
       <div class="compare-pane">
         <div class="compare-pane-header proposed">
           <span>提议人设</span>
           <button class="btn btn-sm" onclick="window._lmpatch.viewText('提议人设', ${proposal.id}, 'proposed')">查看</button>
         </div>
-        <div class="compare-pane-body">${esc(proposal.proposed_persona)}</div>
+        <div class="compare-pane-body">${rightBody}</div>
       </div>
     </div>
     <div class="detail-actions">
       ${actionsHtml}
     </div>
   `;
+
+  // 绑定 diff 切换按钮
+  $("btn-toggle-diff")?.addEventListener("click", () => {
+    state.diffView = !state.diffView;
+    renderProposalDetail();
+  });
 
   // 绑定操作按钮
   if (proposal.status === "pending") {
