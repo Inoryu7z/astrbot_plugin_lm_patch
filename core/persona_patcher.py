@@ -287,7 +287,7 @@ class PersonaPatcher:
 
         流程：
         1. 检查互斥（init_state 必须 idle/completed/cancelled）
-        2. 获取所有 persona_ids，按顺序处理
+        2. 获取最近 30 天内有活跃记忆新增的 persona_ids（跳过已被用户抛弃的 persona）
         3. 每个 persona 按记忆 id 顺序，每批 INIT_BATCH_SIZE(20) 条
         4. 每批生成一个提案，WebUI 审批通过后自动推进下一批
         5. 所有 persona 处理完后，设置 checkpoint 为各自最大 id（正常周期只监控新增）
@@ -295,9 +295,10 @@ class PersonaPatcher:
         if not await self.lm_client.is_available():
             return {"success": False, "error": "LivingMemory 不可用"}
 
-        persona_ids = await self.lm_client.get_all_persona_ids()
+        # 只初始化最近 30 天活跃的 persona，跳过已被用户抛弃的
+        persona_ids = await self.lm_client.get_active_persona_ids(days=30)
         if not persona_ids:
-            return {"success": False, "error": "未发现任何 persona_id，无需初始化"}
+            return {"success": False, "error": "未发现近 30 天活跃的 persona_id，无需初始化"}
 
         if not await self.store.start_init("persona", len(persona_ids)):
             return {"success": False, "error": "已有初始化正在进行中，请先取消或等待完成"}
@@ -333,11 +334,22 @@ class PersonaPatcher:
         persona_id = persona_ids[persona_idx]
 
         # 获取 persona 对象
+        # persona 在 AstrBot 中已被删除时，跳过该 persona 继续下一个，
+        # 不取消整个初始化流程（LivingMemory 中可能残留已删除 persona 的记忆）
         try:
             persona = await self.context.persona_manager.get_persona(persona_id)
         except Exception as e:
-            await self.store.cancel_init(f"persona '{persona_id}' 不存在: {e}")
-            return {"success": False, "error": f"persona '{persona_id}' 不存在: {e}"}
+            logger.warning(
+                f"[LMPatch] persona '{persona_id}' 在 AstrBot 中不存在"
+                f"（可能已被删除），跳过该 persona 继续下一个: {e}"
+            )
+            await self.store.update_init_state(
+                current_persona_idx=persona_idx + 1,
+                processed_until_id=0,
+                current_persona_id=None,
+                current_batch=0,
+            )
+            return await self._process_next_init_batch(persona_ids)
 
         current_persona_text = persona.system_prompt or ""
         persona_name = getattr(persona, "name", None) or persona_id

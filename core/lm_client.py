@@ -250,6 +250,41 @@ class LMClient:
             logger.warning(f"[LMPatch] 获取 persona_id 列表失败: {e}")
             return []
 
+    async def get_active_persona_ids(self, days: int = 30) -> list[str]:
+        """获取最近 N 天内有记忆新增的 persona_id 列表（去重）。
+
+        用于初始化流程：只对近期活跃的 persona 初始化，跳过已被用户抛弃的 persona。
+        documents.created_at 为 TEXT 类型（ISO 格式），用 datetime() 函数比较。
+        """
+        if aiosqlite is None:
+            return []
+
+        engine = await self.get_memory_engine()
+        if engine is None:
+            return []
+
+        db_path = getattr(engine, "db_path", None)
+        if not db_path:
+            return []
+
+        try:
+            async with aiosqlite.connect(db_path) as db:
+                cursor = await db.execute(
+                    "SELECT DISTINCT json_extract(metadata, '$.persona_id') AS pid "
+                    "FROM documents "
+                    "WHERE json_extract(metadata, '$.persona_id') IS NOT NULL "
+                    "AND json_extract(metadata, '$.persona_id') != '' "
+                    "AND created_at IS NOT NULL "
+                    "AND datetime(created_at) >= datetime('now', ?)",
+                    (f"-{days} days",),
+                )
+                rows = await cursor.fetchall()
+                return [row[0] for row in rows if row[0]]
+        except Exception as e:
+            logger.warning(f"[LMPatch] 获取活跃 persona_id 列表失败: {e}")
+            # 回退到全部 persona_id，避免初始化无法启动
+            return await self.get_all_persona_ids()
+
     # ------------------------------------------------------------------
     # 记忆写入（通过 MemoryEngine 实例方法）
     # ------------------------------------------------------------------

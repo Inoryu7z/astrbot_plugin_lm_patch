@@ -97,6 +97,15 @@ class MemoryCompactor:
 
     async def _compact_single_persona(self, persona_id: str) -> bool:
         """处理单个 persona 的记忆压缩。返回是否执行了压缩。"""
+        # persona 在 AstrBot 中已被删除时，跳过（压缩孤儿记忆无意义）
+        try:
+            await self.context.persona_manager.get_persona(persona_id)
+        except Exception:
+            logger.debug(
+                f"[LMPatch] persona '{persona_id}' 在 AstrBot 中不存在，跳过压缩"
+            )
+            return False
+
         # 读取低重要性记忆
         memories = await self.lm_client.list_low_importance_memories(
             persona_id=persona_id,
@@ -322,13 +331,15 @@ class MemoryCompactor:
         从每个 persona 重要性最低的记忆开始，每次取 INIT_COMPACT_BATCH(10) 条压缩，
         循环直到该 persona 不足 min_count 条，然后进入下一个 persona。
         全程后台运行，完成后更新 init_state 为 completed。
+        只初始化最近 30 天内有活跃记忆新增的 persona，跳过已被用户抛弃的 persona。
         """
         if not await self.lm_client.is_available():
             return {"success": False, "error": "LivingMemory 不可用"}
 
-        persona_ids = await self.lm_client.get_all_persona_ids()
+        # 只初始化最近 30 天活跃的 persona，跳过已被用户抛弃的
+        persona_ids = await self.lm_client.get_active_persona_ids(days=30)
         if not persona_ids:
-            return {"success": False, "error": "未发现任何 persona_id，无需初始化"}
+            return {"success": False, "error": "未发现近 30 天活跃的 persona_id，无需初始化"}
 
         if not await self.store.start_init("compact", len(persona_ids)):
             return {"success": False, "error": "已有初始化正在进行中，请先取消或等待完成"}
@@ -351,6 +362,17 @@ class MemoryCompactor:
                 if state.get("status") != "running":
                     logger.info("[LMPatch] 记忆压缩初始化已取消，停止处理")
                     return
+
+                # persona 在 AstrBot 中已被删除时，跳过该 persona
+                # （LivingMemory 中可能残留已删除 persona 的记忆，压缩它无意义）
+                try:
+                    await self.context.persona_manager.get_persona(persona_id)
+                except Exception:
+                    logger.warning(
+                        f"[LMPatch] persona '{persona_id}' 在 AstrBot 中不存在"
+                        f"（可能已被删除），跳过该 persona 的压缩"
+                    )
+                    continue
 
                 await self.store.update_init_state(
                     current_persona_id=persona_id,
