@@ -486,7 +486,11 @@ class PersonaPatcher:
         return {"success": True, "message": "初始化已取消"}
 
     async def reject_proposal(self, proposal_id: int, reason: str = "") -> dict:
-        """拒绝提案（终态，不写回人设）。"""
+        """拒绝提案（终态，不写回人设）。
+
+        如果是初始化迭代提案，拒绝后自动推进下一批（与审批通过一致），
+        避免"拒绝提案 → 初始化卡住"的问题。
+        """
         proposal = await self.store.get_proposal(proposal_id)
         if not proposal:
             return {"success": False, "error": "提案不存在"}
@@ -499,7 +503,22 @@ class PersonaPatcher:
 
         await self.store.update_proposal_status(proposal_id, "rejected", reason)
         logger.info(f"[LMPatch] 提案 #{proposal_id} 已拒绝: {reason}")
-        return {"success": True, "message": "提案已拒绝"}
+
+        # 如果是初始化迭代提案，拒绝后也推进下一批（用户不认可演进方向，
+        # 但初始化流程应继续处理后续记忆，而非卡住）
+        init_next = None
+        if proposal.get("is_init"):
+            try:
+                init_next = await self.continue_persona_init_after_approval(proposal_id)
+            except Exception as e:
+                logger.warning(f"[LMPatch] 初始化迭代推进失败: {e}", exc_info=True)
+                init_next = {"success": False, "error": f"迭代推进失败: {e}"}
+
+        return {
+            "success": True,
+            "message": "提案已拒绝",
+            "init_next": init_next,
+        }
 
     async def reroll_proposal(
         self, proposal_id: int, rejection_reason: str

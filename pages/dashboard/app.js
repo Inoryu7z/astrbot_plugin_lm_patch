@@ -692,9 +692,28 @@ async function rejectProposal(id) {
   try {
     const resp = await api.post("proposal/reject", { id, reason: reason || "" });
     toast(resp.message || "已拒绝", "success");
+    // 如果是初始化提案，拒绝后也会推进下一批（与审批通过一致）
+    if (resp.init_next) {
+      if (resp.init_next.completed) {
+        toast(resp.init_next.message || "初始化已完成", "success");
+      } else if (resp.init_next.success) {
+        toast(
+          resp.init_next.message || `迭代 ${resp.init_next.batch} 已生成`,
+          "success"
+        );
+      } else if (resp.init_next.error) {
+        toast(`下一批生成失败: ${resp.init_next.error}`, "warning");
+      }
+    }
     await loadProposals();
-    state.currentProposalId = null;
-    renderProposalDetail();
+    // 如果 init_next 生成了新提案，自动选中它
+    if (resp.init_next && resp.init_next.proposal_id) {
+      state.currentProposalId = resp.init_next.proposal_id;
+      renderProposalDetail();
+    } else {
+      state.currentProposalId = null;
+      renderProposalDetail();
+    }
   } catch (e) {
     toast(`操作失败: ${e.message}`, "error");
   }
