@@ -183,6 +183,39 @@ class LMClient:
             where, (persona_id, importance_threshold), limit
         )
 
+    async def get_max_memory_id(self, persona_id: str) -> int:
+        """获取指定 persona 下当前最大的 memory id。
+
+        用于首次初始化 checkpoint：人设补丁只关心"新增记忆是否触发人设演化"，
+        历史记忆在人设形成时已体现，因此首次运行应将 checkpoint 推进到当前
+        最大 id，避免一次性读取全部历史记忆（用户可能有数百条）。
+        """
+        if aiosqlite is None:
+            return 0
+
+        engine = await self.get_memory_engine()
+        if engine is None:
+            return 0
+
+        db_path = getattr(engine, "db_path", None)
+        if not db_path:
+            return 0
+
+        try:
+            async with aiosqlite.connect(db_path) as db:
+                cursor = await db.execute(
+                    "SELECT MAX(id) FROM documents "
+                    "WHERE json_extract(metadata, '$.persona_id') = ?",
+                    (persona_id,),
+                )
+                row = await cursor.fetchone()
+                if row is None or row[0] is None:
+                    return 0
+                return int(row[0])
+        except Exception as e:
+            logger.warning(f"[LMPatch] 获取 persona '{persona_id}' 最大 id 失败: {e}")
+            return 0
+
     async def get_all_persona_ids(self) -> list[str]:
         """获取 livingmemory 中所有出现过的 persona_id（去重）。"""
         if aiosqlite is None:

@@ -24,6 +24,14 @@
             <span>提案审批</span>
             <span class="nav-badge" id="badge-pending" style="display:none">0</span>
           </button>
+          <button class="nav-item" data-page="init">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+              <path d="M21 3v5h-5"/>
+            </svg>
+            <span>初始化</span>
+            <span class="nav-badge" id="badge-init" style="display:none">!</span>
+          </button>
           <button class="nav-item" data-page="snapshots">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
@@ -100,6 +108,36 @@
                   </svg>
                   <div>从左侧选择一个提案查看详情</div>
                 </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 初始化页 -->
+        <section class="page" id="page-init">
+          <header class="page-header">
+            <span class="page-title">初始化</span>
+            <div class="page-actions">
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-init">刷新</button>
+            </div>
+          </header>
+          <div class="page-body">
+            <div class="card init-card">
+              <div class="init-intro">
+                <p>长期使用 LivingMemory 的用户可能积累了大量历史记忆。初始化功能帮助你分批处理这些历史记忆：</p>
+                <ul>
+                  <li><strong>人设迭代初始化</strong>：按历史记忆顺序，每批 20 条，由 LLM 提议人设变更，你审批通过后进入下一批，直到处理完所有历史记忆。</li>
+                  <li><strong>记忆压缩初始化</strong>：从重要性最低的记忆开始，每批 10 条自动压缩，后台运行，完成后通知你。</li>
+                </ul>
+                <p class="init-hint">两个初始化互斥，一次只能进行一个。</p>
+              </div>
+              <div class="init-actions">
+                <button class="btn btn-primary" id="btn-start-persona-init">开始人设迭代初始化</button>
+                <button class="btn btn-primary" id="btn-start-compact-init">开始记忆压缩初始化</button>
+                <button class="btn btn-danger" id="btn-cancel-init" style="display:none">取消初始化</button>
+              </div>
+              <div class="init-status" id="init-status">
+                <div class="empty-state">点击上方按钮开始初始化</div>
               </div>
             </div>
           </div>

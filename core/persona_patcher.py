@@ -24,6 +24,9 @@ from .llm_helper import LLMHelper
 from .lm_client import LMClient
 from .store import Store
 
+# 人设迭代初始化的批次大小（硬编码，用户确认）
+INIT_BATCH_SIZE = 20
+
 
 class PersonaPatcher:
     """人设补丁器。"""
@@ -251,11 +254,217 @@ class PersonaPatcher:
             f"[LMPatch] 提案 #{proposal_id} 已通过，persona '{persona_id}' 已更新"
             f"{'（快照 #' + str(snapshot_id) + '）' if snapshot_id else ''}"
         )
+
+        # 如果是初始化迭代提案，审批通过后自动推进下一批
+        init_next = None
+        if proposal.get("is_init"):
+            try:
+                init_next = await self.continue_persona_init_after_approval(proposal_id)
+            except Exception as e:
+                logger.warning(f"[LMPatch] 初始化迭代推进失败: {e}", exc_info=True)
+                init_next = {"success": False, "error": f"迭代推进失败: {e}"}
+
         return {
             "success": True,
             "snapshot_id": snapshot_id,
             "message": "人设已更新",
+            "init_next": init_next,
         }
+
+    # ------------------------------------------------------------------
+    # 人设迭代初始化（WebUI 触发，分批处理历史记忆）
+    # ------------------------------------------------------------------
+
+    async def start_persona_init(self) -> dict:
+        """启动人设迭代初始化：对每个 persona 按历史记忆顺序分批生成提案。
+
+        流程：
+        1. 检查互斥（init_state 必须 idle/completed/cancelled）
+        2. 获取所有 persona_ids，按顺序处理
+        3. 每个 persona 按记忆 id 顺序，每批 INIT_BATCH_SIZE(20) 条
+        4. 每批生成一个提案，WebUI 审批通过后自动推进下一批
+        5. 所有 persona 处理完后，设置 checkpoint 为各自最大 id（正常周期只监控新增）
+        """
+        if not await self.lm_client.is_available():
+            return {"success": False, "error": "LivingMemory 不可用"}
+
+        persona_ids = await self.lm_client.get_all_persona_ids()
+        if not persona_ids:
+            return {"success": False, "error": "未发现任何 persona_id，无需初始化"}
+
+        if not await self.store.start_init("persona", len(persona_ids)):
+            return {"success": False, "error": "已有初始化正在进行中，请先取消或等待完成"}
+
+        logger.info(
+            f"[LMPatch] 启动人设迭代初始化：共 {len(persona_ids)} 个 persona，"
+            f"每批 {INIT_BATCH_SIZE} 条记忆"
+        )
+        return await self._process_next_init_batch(persona_ids)
+
+    async def _process_next_init_batch(self, persona_ids: list[str]) -> dict:
+        """处理下一批初始化记忆，生成提案。"""
+        state = await self.store.get_init_state()
+        persona_idx = state.get("current_persona_idx", 0)
+
+        # 所有 persona 处理完
+        if persona_idx >= len(persona_ids):
+            # 为每个 persona 设置 checkpoint 为最大 id，使正常周期只监控新增
+            for pid in persona_ids:
+                max_id = await self.lm_client.get_max_memory_id(pid)
+                if max_id > 0:
+                    await self.store.update_checkpoint(pid, max_id)
+            total = state.get("total_processed", 0)
+            await self.store.complete_init(total)
+            logger.info(f"[LMPatch] 人设迭代初始化完成，共处理 {total} 条记忆")
+            return {
+                "success": True,
+                "completed": True,
+                "total_processed": total,
+                "message": "人设迭代初始化已完成",
+            }
+
+        persona_id = persona_ids[persona_idx]
+
+        # 获取 persona 对象
+        try:
+            persona = await self.context.persona_manager.get_persona(persona_id)
+        except Exception as e:
+            await self.store.cancel_init(f"persona '{persona_id}' 不存在: {e}")
+            return {"success": False, "error": f"persona '{persona_id}' 不存在: {e}"}
+
+        current_persona_text = persona.system_prompt or ""
+        persona_name = getattr(persona, "name", None) or persona_id
+
+        # 读取本批记忆
+        processed_until_id = state.get("processed_until_id", 0)
+        memories = await self.lm_client.list_memories_by_persona(
+            persona_id=persona_id,
+            since_id=processed_until_id,
+            limit=INIT_BATCH_SIZE,
+        )
+
+        # 当前 persona 无更多记忆，进入下一个
+        if not memories:
+            logger.info(
+                f"[LMPatch] persona '{persona_id}' 历史记忆已全部处理完，"
+                f"进入下一个 persona"
+            )
+            await self.store.update_init_state(
+                current_persona_idx=persona_idx + 1,
+                processed_until_id=0,
+                current_persona_id=None,
+                current_batch=0,
+            )
+            return await self._process_next_init_batch(persona_ids)
+
+        # 更新 init_state
+        new_batch = state.get("current_batch", 0) + 1
+        await self.store.update_init_state(
+            current_persona_id=persona_id,
+            current_batch=new_batch,
+        )
+
+        # 构造记忆文本并调用 LLM
+        memories_text = self._format_memories(memories)
+        user_prompt = PERSONA_PATCH_USER_TEMPLATE.format(
+            persona_text=current_persona_text,
+            memory_count=len(memories),
+            memories_text=memories_text,
+        )
+        raw = await self.llm_helper.chat(
+            system_prompt=PERSONA_PATCH_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            provider_id=self.llm_provider_id,
+        )
+        if not raw:
+            await self.store.cancel_init("LLM 调用失败")
+            return {"success": False, "error": "LLM 调用失败，初始化已取消"}
+
+        result = extract_json(raw)
+        if result is None:
+            await self.store.cancel_init("LLM 输出无法解析为 JSON")
+            return {"success": False, "error": "LLM 输出无法解析，初始化已取消"}
+
+        trigger_ids = [m["id"] for m in memories]
+
+        if not result.get("need_change", False):
+            # LLM 认为本批无需变更，推进游标准备下一批
+            last_id = max(trigger_ids)
+            await self.store.update_init_state(
+                processed_until_id=last_id,
+                total_processed=state.get("total_processed", 0) + len(memories),
+            )
+            logger.info(
+                f"[LMPatch] persona '{persona_id}' 迭代 {new_batch}："
+                f"LLM 判断无需变更，跳过本批"
+            )
+            return await self._process_next_init_batch(persona_ids)
+
+        new_persona = result.get("new_persona", "").strip()
+        if not new_persona:
+            await self.store.cancel_init("LLM 输出 new_persona 为空")
+            return {"success": False, "error": "LLM 输出 new_persona 为空，初始化已取消"}
+
+        # 创建待审提案（标记为 init）
+        changed_aspects = result.get("changed_aspects", []) or []
+        change_desc = result.get("change_description", "")
+
+        proposal_id = await self.store.add_proposal(
+            persona_id=persona_id,
+            persona_name=persona_name,
+            original_persona=current_persona_text,
+            proposed_persona=new_persona,
+            change_description=change_desc,
+            changed_aspects=changed_aspects if isinstance(changed_aspects, list) else [],
+            trigger_memory_ids=trigger_ids,
+            is_init=True,
+            init_batch=new_batch,
+        )
+        logger.info(
+            f"[LMPatch] persona '{persona_id}' 初始化迭代 {new_batch}："
+            f"创建提案 #{proposal_id}，等待审批"
+        )
+        return {
+            "success": True,
+            "proposal_id": proposal_id,
+            "persona_name": persona_name,
+            "batch": new_batch,
+            "message": f"迭代 {new_batch} 已生成，等待审批",
+        }
+
+    async def continue_persona_init_after_approval(self, proposal_id: int) -> dict:
+        """init 提案审批通过后，推进游标并生成下一批提案。"""
+        proposal = await self.store.get_proposal(proposal_id)
+        if not proposal:
+            return {"success": False, "error": "提案不存在"}
+
+        trigger_ids = proposal.get("trigger_memory_ids", [])
+        if not trigger_ids:
+            return {"success": False, "error": "提案无 trigger_memory_ids"}
+
+        last_id = max(trigger_ids)
+        state = await self.store.get_init_state()
+        await self.store.update_init_state(
+            processed_until_id=last_id,
+            total_processed=state.get("total_processed", 0) + len(trigger_ids),
+        )
+
+        # 重新获取 persona_ids（可能中途有新增）
+        persona_ids = await self.lm_client.get_all_persona_ids()
+        if not persona_ids:
+            await self.store.complete_init(state.get("total_processed", 0))
+            return {"success": True, "completed": True}
+
+        return await self._process_next_init_batch(persona_ids)
+
+    async def cancel_persona_init(self) -> dict:
+        """取消人设迭代初始化。"""
+        state = await self.store.get_init_state()
+        if state.get("status") != "running":
+            return {"success": False, "error": "当前无初始化正在进行"}
+        await self.store.cancel_init("用户主动取消")
+        logger.info("[LMPatch] 人设迭代初始化已取消")
+        return {"success": True, "message": "初始化已取消"}
 
     async def reject_proposal(self, proposal_id: int, reason: str = "") -> dict:
         """拒绝提案（终态，不写回人设）。"""

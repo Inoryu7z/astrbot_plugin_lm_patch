@@ -120,7 +120,7 @@ class LMPatchPlugin(Star):
             logger.error(f"[LMPatch] 初始化失败: {e}", exc_info=True)
 
     async def terminate(self) -> None:
-        """插件停止：先停止调度器，再关闭数据库连接。"""
+        """插件停止：先停止调度器与初始化任务，再关闭数据库连接。"""
         logger.info("[LMPatch] 插件正在停止...")
 
         # 1. 停止后台调度（cancel 所有 task）
@@ -129,7 +129,19 @@ class LMPatchPlugin(Star):
         except Exception as e:
             logger.warning(f"[LMPatch] 停止调度器时出错: {e}")
 
-        # 2. 关闭本地数据库
+        # 2. 取消记忆压缩初始化后台任务（如有）
+        try:
+            task = getattr(self.memory_compactor, "_init_task", None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[LMPatch] 取消压缩初始化任务时出错: {e}")
+
+        # 3. 关闭本地数据库
         try:
             await self.store.close()
         except Exception as e:

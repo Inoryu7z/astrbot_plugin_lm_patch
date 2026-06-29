@@ -151,6 +151,7 @@ function switchPage(pageName) {
 
   // 按需加载数据
   if (pageName === "proposals") loadProposals();
+  else if (pageName === "init") loadInitState();
   else if (pageName === "snapshots") loadSnapshots();
   else if (pageName === "logs") loadLogs();
   else if (pageName === "status") loadStatus();
@@ -207,6 +208,10 @@ function renderProposalList() {
         p.reroll_count > 0
           ? `<span>· 重议 ${p.reroll_count} 次</span>`
           : "";
+      const initBadge =
+        p.is_init && p.init_batch > 0
+          ? `<span class="badge badge-init">初始化·迭代 ${p.init_batch}</span>`
+          : "";
       return `
       <div class="proposal-item ${isActive ? "active" : ""}" data-id="${p.id}">
         <div class="proposal-item-id">#${p.id}</div>
@@ -216,6 +221,7 @@ function renderProposalList() {
         )}</div>
         <div class="proposal-item-meta">
           ${statusBadge(p.status)}
+          ${initBadge}
           <span>· ${esc(p.created_at)}</span>
           ${rerollInfo}
         </div>
@@ -256,6 +262,11 @@ function renderProposalDetail() {
       ? `<div class="detail-aspects">${proposal.changed_aspects
           .map((a) => `<span class="aspect-tag">${esc(a)}</span>`)
           .join("")}</div>`
+      : "";
+
+  const initInfo =
+    proposal.is_init && proposal.init_batch > 0
+      ? `<span class="badge badge-init">初始化·迭代 ${proposal.init_batch}</span>`
       : "";
 
   const rerollInfo =
@@ -306,6 +317,7 @@ function renderProposalDetail() {
       ${aspectsHtml}
       <div style="margin-top:8px;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text-tertiary)">
         ${statusBadge(proposal.status)}
+        ${initInfo}
         <span>· 创建于 ${esc(proposal.created_at)}</span>
         <span>· Persona ID: ${esc(proposal.persona_id)}</span>
         ${rerollInfo}
@@ -349,9 +361,28 @@ async function approveProposal(id) {
     const resp = await api.post("proposal/approve", { id });
     if (resp && resp.success) {
       toast(resp.message || "已通过并写回", "success");
+      // 如果是初始化提案，显示下一批的信息
+      if (resp.init_next) {
+        if (resp.init_next.completed) {
+          toast(resp.init_next.message || "初始化已完成", "success");
+        } else if (resp.init_next.success) {
+          toast(
+            resp.init_next.message || `迭代 ${resp.init_next.batch} 已生成`,
+            "success"
+          );
+        } else if (resp.init_next.error) {
+          toast(`下一批生成失败: ${resp.init_next.error}`, "warning");
+        }
+      }
       await loadProposals();
-      state.currentProposalId = null;
-      renderProposalDetail();
+      // 如果 init_next 生成了新提案，自动选中它
+      if (resp.init_next && resp.init_next.proposal_id) {
+        state.currentProposalId = resp.init_next.proposal_id;
+        renderProposalDetail();
+      } else {
+        state.currentProposalId = null;
+        renderProposalDetail();
+      }
     } else {
       toast(resp?.error || "操作失败", "error");
     }
@@ -654,7 +685,210 @@ window._lmpatch = {
   rollback: rollbackSnapshot,
 };
 
-// ── Init ────────────────────────────────
+// ── Init (初始化) ───────────────────────
+
+async function loadInitState() {
+  const container = $("init-status");
+  if (!container) return;
+  container.innerHTML =
+    '<div class="loading"><span class="spinner"></span>加载中...</div>';
+  try {
+    const resp = await api.get("init/state", {});
+    if (resp && resp.success) {
+      renderInitState(resp.data);
+    } else {
+      container.innerHTML = '<div class="empty-state">加载失败</div>';
+    }
+  } catch (e) {
+    container.innerHTML = `<div class="empty-state">加载失败: ${esc(
+      e.message
+    )}</div>`;
+  }
+}
+
+function renderInitState(s) {
+  const container = $("init-status");
+  if (!s || !container) return;
+
+  const isRunning = s.status === "running";
+  const typeLabel =
+    s.type === "persona" ? "人设迭代初始化" : s.type === "compact" ? "记忆压缩初始化" : "";
+  const statusLabel = {
+    idle: "未开始",
+    running: "进行中",
+    completed: "已完成",
+    cancelled: "已取消",
+  }[s.status] || s.status;
+
+  // 控制按钮显隐
+  $("btn-start-persona-init").style.display = isRunning ? "none" : "";
+  $("btn-start-compact-init").style.display = isRunning ? "none" : "";
+  $("btn-cancel-init").style.display = isRunning ? "" : "none";
+
+  // 导航栏徽标
+  const badge = $("badge-init");
+  if (badge) {
+    if (isRunning) {
+      badge.textContent = "!";
+      badge.style.display = "inline-block";
+    } else {
+      badge.style.display = "none";
+    }
+  }
+
+  if (s.status === "idle") {
+    container.innerHTML = '<div class="empty-state">点击上方按钮开始初始化</div>';
+    return;
+  }
+
+  const progressHtml = isRunning
+    ? s.type === "persona"
+      ? `<div class="init-progress">
+           <div class="init-progress-item"><span class="init-label">当前 Persona</span><span class="init-value">${esc(s.current_persona_id || "-")}</span></div>
+           <div class="init-progress-item"><span class="init-label">当前迭代</span><span class="init-value">第 ${s.current_batch} 批</span></div>
+           <div class="init-progress-item"><span class="init-label">Persona 进度</span><span class="init-value">${s.current_persona_idx + 1} / ${s.total_personas}</span></div>
+           <div class="init-progress-item"><span class="init-label">已处理记忆</span><span class="init-value">${s.total_processed} 条</span></div>
+         </div>`
+      : `<div class="init-progress">
+           <div class="init-progress-item"><span class="init-label">当前 Persona</span><span class="init-value">${esc(s.current_persona_id || "-")}</span></div>
+           <div class="init-progress-item"><span class="init-label">Persona 进度</span><span class="init-value">${s.current_persona_idx + 1} / ${s.total_personas}</span></div>
+           <div class="init-progress-item"><span class="init-label">已压缩记忆</span><span class="init-value">${s.total_compacted} 条</span></div>
+         </div>`
+    : "";
+
+  const timeHtml = s.started_at
+    ? `<div class="init-progress-item"><span class="init-label">开始时间</span><span class="init-value">${esc(s.started_at)}</span></div>`
+    : "";
+  const finishedHtml = s.finished_at
+    ? `<div class="init-progress-item"><span class="init-label">完成时间</span><span class="init-value">${esc(s.finished_at)}</span></div>`
+    : "";
+
+  const summaryHtml =
+    s.status === "completed"
+      ? s.type === "persona"
+        ? `<div class="init-summary">✅ 人设迭代初始化已完成，共处理 ${s.total_processed} 条历史记忆</div>`
+        : `<div class="init-summary">✅ 记忆压缩初始化已完成，共压缩 ${s.total_compacted} 条记忆</div>`
+      : "";
+
+  const errorHtml = s.error
+    ? `<div class="init-error">❌ ${esc(s.error)}</div>`
+    : "";
+
+  container.innerHTML = `
+    <div class="init-state-card ${isRunning ? "running" : s.status}">
+      <div class="init-state-header">
+        <span class="init-state-type">${esc(typeLabel)}</span>
+        <span class="badge badge-${s.status === "running" ? "pending" : s.status === "completed" ? "approved" : s.status === "cancelled" ? "rejected" : "dim"}">${statusLabel}</span>
+      </div>
+      ${progressHtml}
+      ${timeHtml}
+      ${finishedHtml}
+      ${summaryHtml}
+      ${errorHtml}
+    </div>
+  `;
+}
+
+async function startPersonaInit() {
+  if (!confirm("确认开始人设迭代初始化？\n\n将按历史记忆顺序，每批 20 条生成提案，你审批通过后自动进入下一批，直到处理完所有历史记忆。")) return;
+  const btn = $("btn-start-persona-init");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "启动中...";
+  }
+  try {
+    const resp = await api.post("init/persona/start", {});
+    if (resp && resp.success) {
+      if (resp.completed) {
+        toast(resp.message || "无需初始化，已全部处理", "success");
+      } else {
+        toast(resp.message || "初始化已启动", "success");
+        // 跳转到提案页面查看第一个提案
+        switchPage("proposals");
+      }
+      await loadInitState();
+    } else {
+      toast(resp?.error || "启动失败", "error");
+    }
+  } catch (e) {
+    toast(`启动失败: ${e.message}`, "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "开始人设迭代初始化";
+    }
+  }
+}
+
+async function startCompactInit() {
+  if (!confirm("确认开始记忆压缩初始化？\n\n将从重要性最低的记忆开始，每批 10 条自动压缩，后台运行直到完成。")) return;
+  const btn = $("btn-start-compact-init");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "启动中...";
+  }
+  try {
+    const resp = await api.post("init/compact/start", {});
+    if (resp && resp.success) {
+      toast(resp.message || "初始化已启动，后台运行中", "success");
+      await loadInitState();
+      // 开始轮询状态
+      pollInitState();
+    } else {
+      toast(resp?.error || "启动失败", "error");
+    }
+  } catch (e) {
+    toast(`启动失败: ${e.message}`, "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "开始记忆压缩初始化";
+    }
+  }
+}
+
+async function cancelInit() {
+  if (!confirm("确认取消初始化？正在处理的当前批次会完成后停止。")) return;
+  try {
+    const resp = await api.post("init/cancel", {});
+    if (resp && resp.success) {
+      toast(resp.message || "取消请求已发送", "success");
+      await loadInitState();
+    } else {
+      toast(resp?.error || "取消失败", "error");
+    }
+  } catch (e) {
+    toast(`取消失败: ${e.message}`, "error");
+  }
+}
+
+// 压缩初始化后台任务轮询
+let _initPollTimer = null;
+
+function pollInitState() {
+  if (_initPollTimer) clearInterval(_initPollTimer);
+  _initPollTimer = setInterval(async () => {
+    try {
+      const resp = await api.get("init/state", {});
+      if (resp && resp.success) {
+        renderInitState(resp.data);
+        if (resp.data.status !== "running") {
+          clearInterval(_initPollTimer);
+          _initPollTimer = null;
+          if (resp.data.status === "completed") {
+            toast("记忆压缩初始化已完成", "success");
+          } else if (resp.data.status === "cancelled") {
+            toast("记忆压缩初始化已取消", "info");
+          }
+        }
+      }
+    } catch (e) {
+      // 轮询失败，静默忽略
+    }
+  }, 5000);
+}
+
+// ── Init (应用入口) ────────────────────
 
 async function init() {
   // 初始化主题
@@ -679,6 +913,7 @@ async function init() {
 
   // 绑定刷新按钮
   $("btn-refresh-proposals")?.addEventListener("click", loadProposals);
+  $("btn-refresh-init")?.addEventListener("click", loadInitState);
   $("btn-refresh-snapshots")?.addEventListener("click", loadSnapshots);
   $("btn-refresh-logs")?.addEventListener("click", loadLogs);
   $("btn-refresh-status")?.addEventListener("click", loadStatus);
@@ -686,6 +921,11 @@ async function init() {
   // 绑定触发按钮
   $("btn-trigger-patch")?.addEventListener("click", triggerPatch);
   $("btn-trigger-compact")?.addEventListener("click", triggerCompact);
+
+  // 绑定初始化按钮
+  $("btn-start-persona-init")?.addEventListener("click", startPersonaInit);
+  $("btn-start-compact-init")?.addEventListener("click", startCompactInit);
+  $("btn-cancel-init")?.addEventListener("click", cancelInit);
 
   // 等待 Bridge 就绪
   try {

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from astrbot.api import logger
@@ -18,6 +19,9 @@ from ..prompts import (
 from .llm_helper import LLMHelper
 from .lm_client import LMClient
 from .store import Store
+
+# 记忆压缩初始化的批次大小（硬编码，用户确认）
+INIT_COMPACT_BATCH = 10
 
 
 class MemoryCompactor:
@@ -36,6 +40,7 @@ class MemoryCompactor:
         self.store = store
         self.llm_helper = llm_helper
         self.config = config
+        self._init_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # 配置属性
@@ -97,6 +102,16 @@ class MemoryCompactor:
             )
             return False
 
+        return await self._compact_memories(persona_id, memories)
+
+    async def _compact_memories(
+        self, persona_id: str, memories: list[dict]
+    ) -> bool:
+        """对给定的一批低重要性记忆执行压缩。
+
+        流程：先 add 新摘要全部成功后再 delete 旧记忆（避免删除后新增失败导致数据丢失）。
+        返回是否成功执行了压缩。
+        """
         # 构造记忆文本
         memories_text = self._format_memories(memories)
 
@@ -194,6 +209,97 @@ class MemoryCompactor:
             created_ids=created_ids,
         )
         return True
+
+    # ------------------------------------------------------------------
+    # 记忆压缩初始化（WebUI 触发，后台分批清完积压）
+    # ------------------------------------------------------------------
+
+    async def start_compact_init(self) -> dict:
+        """启动记忆压缩初始化：后台分批压缩所有 persona 的低重要性记忆。
+
+        从每个 persona 重要性最低的记忆开始，每次取 INIT_COMPACT_BATCH(10) 条压缩，
+        循环直到该 persona 不足 min_count 条，然后进入下一个 persona。
+        全程后台运行，完成后更新 init_state 为 completed。
+        """
+        if not await self.lm_client.is_available():
+            return {"success": False, "error": "LivingMemory 不可用"}
+
+        persona_ids = await self.lm_client.get_all_persona_ids()
+        if not persona_ids:
+            return {"success": False, "error": "未发现任何 persona_id，无需初始化"}
+
+        if not await self.store.start_init("compact", len(persona_ids)):
+            return {"success": False, "error": "已有初始化正在进行中，请先取消或等待完成"}
+
+        logger.info(
+            f"[LMPatch] 启动记忆压缩初始化：共 {len(persona_ids)} 个 persona，"
+            f"每批 {INIT_COMPACT_BATCH} 条"
+        )
+        # 后台运行，不阻塞 WebUI 响应
+        self._init_task = asyncio.create_task(self._run_compact_init(persona_ids))
+        return {"success": True, "message": "记忆压缩初始化已启动，后台运行中"}
+
+    async def _run_compact_init(self, persona_ids: list[str]) -> None:
+        """后台执行记忆压缩初始化。"""
+        try:
+            total_compacted = 0
+            for idx, persona_id in enumerate(persona_ids):
+                # 检查是否被取消
+                state = await self.store.get_init_state()
+                if state.get("status") != "running":
+                    logger.info("[LMPatch] 记忆压缩初始化已取消，停止处理")
+                    return
+
+                await self.store.update_init_state(
+                    current_persona_id=persona_id,
+                    current_persona_idx=idx,
+                )
+
+                # 循环压缩当前 persona 的低重要性记忆
+                while True:
+                    state = await self.store.get_init_state()
+                    if state.get("status") != "running":
+                        return
+
+                    memories = await self.lm_client.list_low_importance_memories(
+                        persona_id=persona_id,
+                        importance_threshold=self.importance_threshold,
+                        limit=INIT_COMPACT_BATCH,
+                    )
+
+                    if len(memories) < self.min_count:
+                        logger.info(
+                            f"[LMPatch] persona '{persona_id}' 低重要性记忆已全部压缩完，"
+                            f"进入下一个 persona"
+                        )
+                        break
+
+                    success = await self._compact_memories(persona_id, memories)
+                    if success:
+                        total_compacted += len(memories)
+                        await self.store.update_init_state(
+                            total_compacted=total_compacted,
+                        )
+                    else:
+                        logger.warning(
+                            f"[LMPatch] persona '{persona_id}' 一批压缩失败，跳过该批继续"
+                        )
+
+            await self.store.complete_init(0, total_compacted)
+            logger.info(f"[LMPatch] 记忆压缩初始化完成，共压缩 {total_compacted} 条记忆")
+        except Exception as e:
+            logger.error(f"[LMPatch] 记忆压缩初始化失败: {e}", exc_info=True)
+            await self.store.cancel_init(str(e))
+
+    async def cancel_compact_init(self) -> dict:
+        """取消记忆压缩初始化。"""
+        state = await self.store.get_init_state()
+        if state.get("status") != "running" or state.get("type") != "compact":
+            return {"success": False, "error": "当前无压缩初始化正在进行"}
+        await self.store.cancel_init("用户主动取消")
+        # 后台任务会在下一轮循环检测到 status != running 后退出
+        logger.info("[LMPatch] 记忆压缩初始化已请求取消")
+        return {"success": True, "message": "初始化取消请求已发送，后台任务将在当前批次完成后停止"}
 
     def _format_memories(self, memories: list[dict]) -> str:
         """格式化记忆列表为 LLM 可读文本。"""

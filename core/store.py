@@ -74,6 +74,8 @@ class Store:
                 rejection_reason TEXT,
                 reroll_count INTEGER NOT NULL DEFAULT 0,
                 trigger_memory_ids TEXT,
+                is_init INTEGER NOT NULL DEFAULT 0,
+                init_batch INTEGER NOT NULL DEFAULT 0,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             );
@@ -96,7 +98,41 @@ class Store:
 
             CREATE INDEX IF NOT EXISTS idx_snapshots_persona
                 ON persona_snapshots(persona_id);
+
+            CREATE TABLE IF NOT EXISTS init_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                type TEXT,
+                status TEXT NOT NULL DEFAULT 'idle',
+                current_persona_id TEXT,
+                current_persona_idx INTEGER NOT NULL DEFAULT 0,
+                current_batch INTEGER NOT NULL DEFAULT 0,
+                total_personas INTEGER NOT NULL DEFAULT 0,
+                processed_until_id INTEGER NOT NULL DEFAULT 0,
+                total_processed INTEGER NOT NULL DEFAULT 0,
+                total_compacted INTEGER NOT NULL DEFAULT 0,
+                started_at REAL,
+                updated_at REAL,
+                finished_at REAL,
+                error TEXT
+            );
+
+            INSERT OR IGNORE INTO init_state (id, status) VALUES (1, 'idle');
         """)
+        # Migration: 为已存在的 pending_proposals 表补齐新列
+        await self._migrate_proposals_table()
+
+    async def _migrate_proposals_table(self) -> None:
+        """为旧版本的 pending_proposals 表添加 is_init/init_batch 列。"""
+        cursor = await self._db.execute("PRAGMA table_info(pending_proposals)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "is_init" not in columns:
+            await self._db.execute(
+                "ALTER TABLE pending_proposals ADD COLUMN is_init INTEGER NOT NULL DEFAULT 0"
+            )
+        if "init_batch" not in columns:
+            await self._db.execute(
+                "ALTER TABLE pending_proposals ADD COLUMN init_batch INTEGER NOT NULL DEFAULT 0"
+            )
 
     # ------------------------------------------------------------------
     # Checkpoint（增量读取）
@@ -202,6 +238,8 @@ class Store:
         changed_aspects: list[str] | None = None,
         trigger_memory_ids: list[int] | None = None,
         reroll_count: int = 0,
+        is_init: bool = False,
+        init_batch: int = 0,
     ) -> int:
         """添加一个待审提案，返回提案 id。"""
         if self._db is None:
@@ -211,8 +249,8 @@ class Store:
             "INSERT INTO pending_proposals "
             "(persona_id, persona_name, original_persona, proposed_persona, "
             " change_description, changed_aspects, status, reroll_count, "
-            " trigger_memory_ids, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+            " trigger_memory_ids, is_init, init_batch, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
             (
                 persona_id,
                 persona_name,
@@ -222,6 +260,8 @@ class Store:
                 json.dumps(changed_aspects) if changed_aspects else None,
                 reroll_count,
                 json.dumps(trigger_memory_ids) if trigger_memory_ids else None,
+                1 if is_init else 0,
+                init_batch,
                 now,
                 now,
             ),
@@ -416,3 +456,89 @@ class Store:
                     d["created_ids"] = []
             result.append(d)
         return result
+
+    # ------------------------------------------------------------------
+    # 初始化状态（人设迭代初始化 / 记忆压缩初始化，全局互斥）
+    # ------------------------------------------------------------------
+
+    async def get_init_state(self) -> dict[str, Any]:
+        """获取初始化状态（单行表）。"""
+        if self._db is None:
+            return {"status": "idle", "type": None}
+        cursor = await self._db.execute("SELECT * FROM init_state WHERE id = 1")
+        row = await cursor.fetchone()
+        if row is None:
+            return {"status": "idle", "type": None}
+        return dict(row)
+
+    async def start_init(self, init_type: str, total_personas: int) -> bool:
+        """尝试启动初始化。若当前非 idle 返回 False（互斥）。"""
+        if self._db is None:
+            return False
+        state = await self.get_init_state()
+        if state.get("status") not in ("idle", "completed", "cancelled"):
+            return False
+        now = time.time()
+        await self._db.execute(
+            "UPDATE init_state SET "
+            "type = ?, status = 'running', current_persona_id = NULL, "
+            "current_persona_idx = 0, current_batch = 0, "
+            "total_personas = ?, processed_until_id = 0, "
+            "total_processed = 0, total_compacted = 0, "
+            "started_at = ?, updated_at = ?, finished_at = NULL, error = NULL "
+            "WHERE id = 1",
+            (init_type, total_personas, now, now),
+        )
+        await self._db.commit()
+        return True
+
+    async def update_init_state(self, **fields) -> None:
+        """更新初始化状态的指定字段。"""
+        if self._db is None or not fields:
+            return
+        fields["updated_at"] = time.time()
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        params = tuple(fields.values())
+        await self._db.execute(
+            f"UPDATE init_state SET {set_clause} WHERE id = 1", params
+        )
+        await self._db.commit()
+
+    async def complete_init(
+        self, total_processed: int, total_compacted: int = 0
+    ) -> None:
+        """标记初始化完成。"""
+        if self._db is None:
+            return
+        now = time.time()
+        await self._db.execute(
+            "UPDATE init_state SET status = 'completed', "
+            "total_processed = ?, total_compacted = ?, "
+            "finished_at = ?, updated_at = ? WHERE id = 1",
+            (total_processed, total_compacted, now, now),
+        )
+        await self._db.commit()
+
+    async def cancel_init(self, error: str = "") -> None:
+        """取消初始化（用户主动取消或出错）。"""
+        if self._db is None:
+            return
+        now = time.time()
+        await self._db.execute(
+            "UPDATE init_state SET status = 'cancelled', error = ?, "
+            "finished_at = ?, updated_at = ? WHERE id = 1",
+            (error, now, now),
+        )
+        await self._db.commit()
+
+    async def reset_init_to_idle(self) -> None:
+        """将初始化状态重置为 idle（用于取消后重新开始）。"""
+        if self._db is None:
+            return
+        await self._db.execute(
+            "UPDATE init_state SET status = 'idle', type = NULL, "
+            "current_persona_id = NULL, error = NULL, "
+            "updated_at = ? WHERE id = 1",
+            (time.time(),),
+        )
+        await self._db.commit()

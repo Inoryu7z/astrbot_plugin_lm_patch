@@ -133,6 +133,31 @@ class WebUI:
                 ["POST"],
                 "LMPatch trigger compact cycle",
             ),
+            # 初始化
+            (
+                f"{PAGE_API_PREFIX}/init/state",
+                self.get_init_state,
+                ["GET"],
+                "LMPatch init state",
+            ),
+            (
+                f"{PAGE_API_PREFIX}/init/persona/start",
+                self.start_persona_init,
+                ["POST"],
+                "LMPatch start persona init",
+            ),
+            (
+                f"{PAGE_API_PREFIX}/init/compact/start",
+                self.start_compact_init,
+                ["POST"],
+                "LMPatch start compact init",
+            ),
+            (
+                f"{PAGE_API_PREFIX}/init/cancel",
+                self.cancel_init,
+                ["POST"],
+                "LMPatch cancel init",
+            ),
         ]
 
         for route, handler, methods, desc in routes:
@@ -165,6 +190,8 @@ class WebUI:
             "rejection_reason": p.get("rejection_reason") or "",
             "reroll_count": p.get("reroll_count", 0),
             "trigger_memory_ids": _parse_json_field(p.get("trigger_memory_ids")),
+            "is_init": bool(p.get("is_init", 0)),
+            "init_batch": p.get("init_batch", 0),
             "created_at": self._fmt_time(p.get("created_at")),
             "updated_at": self._fmt_time(p.get("updated_at")),
         }
@@ -394,3 +421,50 @@ class WebUI:
             "compacted_count": count,
             "message": f"记忆压缩已触发，执行 {count} 次压缩",
         }
+
+    # ------------------------------------------------------------------
+    # 初始化
+    # ------------------------------------------------------------------
+
+    async def get_init_state(self):
+        """获取初始化状态。"""
+        state = await self.store.get_init_state()
+        return {
+            "success": True,
+            "data": {
+                "type": state.get("type"),
+                "status": state.get("status", "idle"),
+                "current_persona_id": state.get("current_persona_id"),
+                "current_persona_idx": state.get("current_persona_idx", 0),
+                "current_batch": state.get("current_batch", 0),
+                "total_personas": state.get("total_personas", 0),
+                "total_processed": state.get("total_processed", 0),
+                "total_compacted": state.get("total_compacted", 0),
+                "started_at": self._fmt_time(state.get("started_at")),
+                "updated_at": self._fmt_time(state.get("updated_at")),
+                "finished_at": self._fmt_time(state.get("finished_at")),
+                "error": state.get("error") or "",
+            },
+        }
+
+    async def start_persona_init(self):
+        """启动人设迭代初始化。"""
+        result = await self.persona_patcher.start_persona_init()
+        return result
+
+    async def start_compact_init(self):
+        """启动记忆压缩初始化。"""
+        result = await self.memory_compactor.start_compact_init()
+        return result
+
+    async def cancel_init(self):
+        """取消正在进行的初始化。"""
+        state = await self.store.get_init_state()
+        if state.get("status") != "running":
+            return {"success": False, "error": "当前无初始化正在进行"}
+        init_type = state.get("type")
+        if init_type == "persona":
+            return await self.persona_patcher.cancel_persona_init()
+        elif init_type == "compact":
+            return await self.memory_compactor.cancel_compact_init()
+        return {"success": False, "error": f"未知的初始化类型: {init_type}"}
