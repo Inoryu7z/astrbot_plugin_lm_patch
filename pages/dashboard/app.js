@@ -118,6 +118,70 @@ function showModal(title, bodyHtml, actionsHtml = "") {
   });
 }
 
+// sandbox iframe 禁用了 confirm()/prompt()，用自定义模态框替代
+function customConfirm(message) {
+  return new Promise((resolve) => {
+    const container = $("modal-container");
+    container.innerHTML = `
+      <div class="modal-overlay" id="modal-overlay">
+        <div class="modal">
+          <div class="modal-title">确认操作</div>
+          <div class="modal-body">${esc(message)}</div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" id="modal-cancel-btn">取消</button>
+            <button class="btn btn-primary" id="modal-confirm-btn">确认</button>
+          </div>
+        </div>
+      </div>
+    `;
+    const close = (result) => {
+      container.innerHTML = "";
+      resolve(result);
+    };
+    $("modal-cancel-btn").addEventListener("click", () => close(false));
+    $("modal-confirm-btn").addEventListener("click", () => close(true));
+    $("modal-overlay").addEventListener("click", (e) => {
+      if (e.target.id === "modal-overlay") close(false);
+    });
+  });
+}
+
+function customPrompt(message, defaultValue = "") {
+  return new Promise((resolve) => {
+    const container = $("modal-container");
+    container.innerHTML = `
+      <div class="modal-overlay" id="modal-overlay">
+        <div class="modal">
+          <div class="modal-title">输入</div>
+          <div class="modal-body">${esc(message)}</div>
+          <div class="modal-actions">
+            <input type="text" class="input" id="modal-prompt-input" value="${esc(defaultValue)}" style="width:100%;margin-bottom:12px" />
+            <button class="btn btn-secondary" id="modal-cancel-btn">取消</button>
+            <button class="btn btn-primary" id="modal-confirm-btn">确定</button>
+          </div>
+        </div>
+      </div>
+    `;
+    const input = $("modal-prompt-input");
+    input.focus();
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        container.innerHTML = "";
+        resolve(input.value);
+      }
+    });
+    const close = (result) => {
+      container.innerHTML = "";
+      resolve(result);
+    };
+    $("modal-cancel-btn").addEventListener("click", () => close(null));
+    $("modal-confirm-btn").addEventListener("click", () => close(input.value));
+    $("modal-overlay").addEventListener("click", (e) => {
+      if (e.target.id === "modal-overlay") close(null);
+    });
+  });
+}
+
 // ── Theme ─────────────────────────────
 
 function applyTheme(theme) {
@@ -362,7 +426,7 @@ function renderProposalDetail() {
 }
 
 async function approveProposal(id) {
-  if (!confirm("确认通过该提案并写回人设？")) return;
+  if (!(await customConfirm("确认通过该提案并写回人设？"))) return;
   try {
     // Bridge 自动解包：成功时 resp 即为 data 字段，失败时抛出 Error
     const resp = await api.post("proposal/approve", { id });
@@ -395,7 +459,7 @@ async function approveProposal(id) {
 }
 
 async function rejectProposal(id) {
-  const reason = prompt("拒绝理由（可选）:");
+  const reason = await customPrompt("拒绝理由（可选）:");
   if (reason === null) return;
   try {
     const resp = await api.post("proposal/reject", { id, reason: reason || "" });
@@ -434,7 +498,7 @@ async function rerollProposal(id) {
 }
 
 async function restartProposal(id) {
-  if (!confirm("确认重启该提案？将清零重议计数并重新提议。")) return;
+  if (!(await customConfirm("确认重启该提案？将清零重议计数并重新提议。"))) return;
   try {
     const resp = await api.post("proposal/restart", { id });
     toast(resp.message || "已重启", "success");
@@ -493,7 +557,7 @@ function viewSnapshot(id) {
 }
 
 async function rollbackSnapshot(id) {
-  if (!confirm(`确认回滚到快照 #${id}？当前人设将保存为新快照以便撤销。`)) return;
+  if (!(await customConfirm(`确认回滚到快照 #${id}？当前人设将保存为新快照以便撤销。`))) return;
   try {
     const resp = await api.post("snapshot/rollback", { id });
     toast(resp.message || "已回滚", "success");
@@ -761,7 +825,7 @@ function renderInitState(s) {
 }
 
 async function startPersonaInit() {
-  if (!confirm("确认开始人设迭代初始化？\n\n将按历史记忆顺序，每批 20 条生成提案，你审批通过后自动进入下一批，直到处理完所有历史记忆。")) return;
+  if (!(await customConfirm("确认开始人设迭代初始化？\n\n将按历史记忆顺序，每批 20 条生成提案，你审批通过后自动进入下一批，直到处理完所有历史记忆。"))) return;
   const btn = $("btn-start-persona-init");
   if (btn) {
     btn.disabled = true;
@@ -788,7 +852,7 @@ async function startPersonaInit() {
 }
 
 async function startCompactInit() {
-  if (!confirm("确认开始记忆压缩初始化？\n\n将从重要性最低的记忆开始，每批 10 条自动压缩，后台运行直到完成。")) return;
+  if (!(await customConfirm("确认开始记忆压缩初始化？\n\n将从重要性最低的记忆开始，每批 10 条自动压缩，后台运行直到完成。"))) return;
   const btn = $("btn-start-compact-init");
   if (btn) {
     btn.disabled = true;
@@ -811,7 +875,7 @@ async function startCompactInit() {
 }
 
 async function cancelInit() {
-  if (!confirm("确认取消初始化？正在处理的当前批次会完成后停止。")) return;
+  if (!(await customConfirm("确认取消初始化？正在处理的当前批次会完成后停止。"))) return;
   try {
     const resp = await api.post("init/cancel", {});
     toast(resp.message || "取消请求已发送", "success");

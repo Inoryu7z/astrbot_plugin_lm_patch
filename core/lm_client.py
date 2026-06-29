@@ -59,9 +59,9 @@ class LMClient:
         """获取 livingmemory 插件实例，带缓存。"""
         now = time.time()
 
-        # 检查缓存
+        # 检查缓存（self._cached_plugin 存的是实例本身，不是 weakref）
         if self._cached_plugin is not None and (now - self._cache_time) < self._cache_ttl:
-            plugin = self._cached_plugin()
+            plugin = self._cached_plugin
             if plugin is not None and not getattr(plugin, "_terminating", False):
                 return plugin
             self._cached_plugin = None
@@ -84,7 +84,7 @@ class LMClient:
         if not getattr(initializer, "is_initialized", False):
             return None
 
-        self._cached_plugin = plugin  # 这里存的是实例本身（weakref 解引用后的对象）
+        self._cached_plugin = plugin  # 存实例本身（get_active_plugin 已做 weakref 解引用）
         self._cache_time = now
         return plugin
 
