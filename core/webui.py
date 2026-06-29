@@ -169,6 +169,27 @@ class WebUI:
     # 辅助
     # ------------------------------------------------------------------
 
+    def _wrap_response(self, result: Any) -> dict:
+        """将内部 {success, ...} 响应格式转换为 AstrBot 标准 {status, data} 格式。
+
+        AstrBot 插件页面 bridge SDK 会自动解包标准响应：
+        - 成功: {"status": "ok", "data": X} → bridge 将 X 传递给前端
+        - 失败: {"status": "error", "message": M} → bridge 抛出 Error(M)
+
+        内部代码使用 {success: true/false, ...} 格式，此方法负责转换。
+        stalled（无法收敛）视为"软成功"：操作已完成但提案已标记为 stalled，
+        前端需要读取 stalled 字段，因此放在 data 中返回而非作为错误。
+        """
+        if not isinstance(result, dict) or "success" not in result:
+            return {"status": "ok", "data": result}
+
+        if result.get("success") or result.get("stalled"):
+            data = {k: v for k, v in result.items() if k != "success"}
+            return {"status": "ok", "data": data}
+
+        message = result.get("error") or result.get("message") or "操作失败"
+        return {"status": "error", "message": str(message)}
+
     def _fmt_time(self, ts: float | None) -> str:
         if not ts:
             return ""
@@ -226,7 +247,7 @@ class WebUI:
     async def get_status(self):
         """获取插件状态。"""
         lm_available = await self.lm_client.is_available()
-        return {
+        return self._wrap_response({
             "success": True,
             "data": {
                 "lm_available": lm_available,
@@ -242,7 +263,7 @@ class WebUI:
                     self.config.get("memory_compact_check_interval_hours", 24)
                 ),
             },
-        }
+        })
 
     async def list_proposals(self):
         """获取提案列表，支持 status 过滤。"""
@@ -261,11 +282,10 @@ class WebUI:
         else:
             proposals = await self.store.list_all_proposals(limit=limit)
 
-        return {
+        return self._wrap_response({
             "success": True,
             "data": [self._fmt_proposal(p) for p in proposals],
-            "total": len(proposals),
-        }
+        })
 
     async def get_proposal(self):
         """获取单个提案详情。"""
@@ -274,15 +294,18 @@ class WebUI:
         try:
             proposal_id = int(request.query.get("id", "0"))
         except (TypeError, ValueError):
-            return {"success": False, "error": "id 参数无效"}
+            return self._wrap_response({"success": False, "error": "id 参数无效"})
         if not proposal_id:
-            return {"success": False, "error": "缺少 id 参数"}
+            return self._wrap_response({"success": False, "error": "缺少 id 参数"})
 
         proposal = await self.store.get_proposal(proposal_id)
         if not proposal:
-            return {"success": False, "error": "提案不存在"}
+            return self._wrap_response({"success": False, "error": "提案不存在"})
 
-        return {"success": True, "data": self._fmt_proposal(proposal)}
+        return self._wrap_response({
+            "success": True,
+            "data": self._fmt_proposal(proposal),
+        })
 
     async def approve_proposal(self):
         """审批通过提案。"""
@@ -294,9 +317,11 @@ class WebUI:
         except (TypeError, ValueError):
             proposal_id = 0
         if not proposal_id:
-            return {"success": False, "error": "缺少 id"}
+            return self._wrap_response({"success": False, "error": "缺少 id"})
 
-        return await self.persona_patcher.approve_proposal(proposal_id)
+        return self._wrap_response(
+            await self.persona_patcher.approve_proposal(proposal_id)
+        )
 
     async def reject_proposal(self):
         """拒绝提案（终态）。"""
@@ -308,10 +333,12 @@ class WebUI:
         except (TypeError, ValueError):
             proposal_id = 0
         if not proposal_id:
-            return {"success": False, "error": "缺少 id"}
+            return self._wrap_response({"success": False, "error": "缺少 id"})
         reason = str(data.get("reason", ""))
 
-        return await self.persona_patcher.reject_proposal(proposal_id, reason)
+        return self._wrap_response(
+            await self.persona_patcher.reject_proposal(proposal_id, reason)
+        )
 
     async def reroll_proposal(self):
         """打回提案，LLM 结合理由重新提议。"""
@@ -323,12 +350,14 @@ class WebUI:
         except (TypeError, ValueError):
             proposal_id = 0
         if not proposal_id:
-            return {"success": False, "error": "缺少 id"}
+            return self._wrap_response({"success": False, "error": "缺少 id"})
         reason = str(data.get("reason", "")).strip()
         if not reason:
-            return {"success": False, "error": "打回需要提供理由"}
+            return self._wrap_response({"success": False, "error": "打回需要提供理由"})
 
-        return await self.persona_patcher.reroll_proposal(proposal_id, reason)
+        return self._wrap_response(
+            await self.persona_patcher.reroll_proposal(proposal_id, reason)
+        )
 
     async def restart_proposal(self):
         """重启 stalled 提案。"""
@@ -340,9 +369,11 @@ class WebUI:
         except (TypeError, ValueError):
             proposal_id = 0
         if not proposal_id:
-            return {"success": False, "error": "缺少 id"}
+            return self._wrap_response({"success": False, "error": "缺少 id"})
 
-        return await self.persona_patcher.restart_stalled_proposal(proposal_id)
+        return self._wrap_response(
+            await self.persona_patcher.restart_stalled_proposal(proposal_id)
+        )
 
     async def list_snapshots(self):
         """获取快照列表，支持 persona_id 过滤。"""
@@ -361,11 +392,10 @@ class WebUI:
         else:
             snapshots = await self.store.list_snapshots(limit=limit)
 
-        return {
+        return self._wrap_response({
             "success": True,
             "data": [self._fmt_snapshot(s) for s in snapshots],
-            "total": len(snapshots),
-        }
+        })
 
     async def rollback_snapshot(self):
         """回滚到指定快照。"""
@@ -377,9 +407,11 @@ class WebUI:
         except (TypeError, ValueError):
             snapshot_id = 0
         if not snapshot_id:
-            return {"success": False, "error": "缺少 id"}
+            return self._wrap_response({"success": False, "error": "缺少 id"})
 
-        return await self.persona_patcher.rollback_to_snapshot(snapshot_id)
+        return self._wrap_response(
+            await self.persona_patcher.rollback_to_snapshot(snapshot_id)
+        )
 
     async def list_compact_log(self):
         """获取压缩日志，支持 persona_id 过滤。"""
@@ -398,29 +430,28 @@ class WebUI:
         else:
             logs = await self.store.list_compaction_log(limit=limit)
 
-        return {
+        return self._wrap_response({
             "success": True,
             "data": [self._fmt_compact_log(log) for log in logs],
-            "total": len(logs),
-        }
+        })
 
     async def trigger_patch(self):
         """手动触发一次人设补丁周期。"""
         count = await self.scheduler.trigger_patch_now()
-        return {
+        return self._wrap_response({
             "success": True,
             "created_proposals": count,
             "message": f"人设补丁已触发，创建 {count} 个提案",
-        }
+        })
 
     async def trigger_compact(self):
         """手动触发一次记忆压缩周期。"""
         count = await self.scheduler.trigger_compact_now()
-        return {
+        return self._wrap_response({
             "success": True,
             "compacted_count": count,
             "message": f"记忆压缩已触发，执行 {count} 次压缩",
-        }
+        })
 
     # ------------------------------------------------------------------
     # 初始化
@@ -429,7 +460,7 @@ class WebUI:
     async def get_init_state(self):
         """获取初始化状态。"""
         state = await self.store.get_init_state()
-        return {
+        return self._wrap_response({
             "success": True,
             "data": {
                 "type": state.get("type"),
@@ -445,26 +476,35 @@ class WebUI:
                 "finished_at": self._fmt_time(state.get("finished_at")),
                 "error": state.get("error") or "",
             },
-        }
+        })
 
     async def start_persona_init(self):
         """启动人设迭代初始化。"""
-        result = await self.persona_patcher.start_persona_init()
-        return result
+        return self._wrap_response(
+            await self.persona_patcher.start_persona_init()
+        )
 
     async def start_compact_init(self):
         """启动记忆压缩初始化。"""
-        result = await self.memory_compactor.start_compact_init()
-        return result
+        return self._wrap_response(
+            await self.memory_compactor.start_compact_init()
+        )
 
     async def cancel_init(self):
         """取消正在进行的初始化。"""
         state = await self.store.get_init_state()
         if state.get("status") != "running":
-            return {"success": False, "error": "当前无初始化正在进行"}
+            return self._wrap_response({"success": False, "error": "当前无初始化正在进行"})
         init_type = state.get("type")
         if init_type == "persona":
-            return await self.persona_patcher.cancel_persona_init()
+            return self._wrap_response(
+                await self.persona_patcher.cancel_persona_init()
+            )
         elif init_type == "compact":
-            return await self.memory_compactor.cancel_compact_init()
-        return {"success": False, "error": f"未知的初始化类型: {init_type}"}
+            return self._wrap_response(
+                await self.memory_compactor.cancel_compact_init()
+            )
+        return self._wrap_response({
+            "success": False,
+            "error": f"未知的初始化类型: {init_type}",
+        })

@@ -15,7 +15,9 @@ except ImportError:
     aiosqlite = None
 
 _LM_PLUGIN_NAME = "astrbot_plugin_livingmemory"
-_LM_MODULE_PATH = f"{_LM_PLUGIN_NAME}.core.passive_group_capture"
+# AstrBot 将插件加载到 data.plugins.{plugin_name}.{module} 命名空间下，
+# 因此导入 livingmemory 的 passive_group_capture 模块时必须带上 data.plugins. 前缀。
+_LM_MODULE_PATH = f"data.plugins.{_LM_PLUGIN_NAME}.core.passive_group_capture"
 
 
 class LMClient:
@@ -43,6 +45,11 @@ class LMClient:
             mod = importlib.import_module(_LM_MODULE_PATH)
             return getattr(mod, "get_active_plugin", None)
         except ImportError:
+            logger.debug(
+                f"[LMPatch] 无法导入 livingmemory 模块 {_LM_MODULE_PATH}，"
+                f"请确认插件已安装且名称正确",
+                exc_info=True,
+            )
             return None
         except Exception:
             logger.debug("[LMPatch] 导入 livingmemory 模块时出错", exc_info=True)

@@ -164,15 +164,11 @@ async function loadProposals() {
   try {
     const params = {};
     if (state.proposalFilter) params.status = state.proposalFilter;
+    // Bridge 会自动解包标准响应：成功时 resp 即为 data 字段（数组），失败时抛出 Error
     const resp = await api.get("proposals", params);
-    if (resp && resp.success) {
-      state.proposals = resp.data || [];
-      renderProposalList();
-      updatePendingBadge();
-    } else {
-      $("proposal-list").innerHTML =
-        '<div class="empty-state">加载失败</div>';
-    }
+    state.proposals = Array.isArray(resp) ? resp : [];
+    renderProposalList();
+    updatePendingBadge();
   } catch (e) {
     $("proposal-list").innerHTML = `<div class="empty-state">加载失败: ${esc(
       e.message
@@ -358,33 +354,30 @@ function renderProposalDetail() {
 async function approveProposal(id) {
   if (!confirm("确认通过该提案并写回人设？")) return;
   try {
+    // Bridge 自动解包：成功时 resp 即为 data 字段，失败时抛出 Error
     const resp = await api.post("proposal/approve", { id });
-    if (resp && resp.success) {
-      toast(resp.message || "已通过并写回", "success");
-      // 如果是初始化提案，显示下一批的信息
-      if (resp.init_next) {
-        if (resp.init_next.completed) {
-          toast(resp.init_next.message || "初始化已完成", "success");
-        } else if (resp.init_next.success) {
-          toast(
-            resp.init_next.message || `迭代 ${resp.init_next.batch} 已生成`,
-            "success"
-          );
-        } else if (resp.init_next.error) {
-          toast(`下一批生成失败: ${resp.init_next.error}`, "warning");
-        }
+    toast(resp.message || "已通过并写回", "success");
+    // 如果是初始化提案，显示下一批的信息
+    if (resp.init_next) {
+      if (resp.init_next.completed) {
+        toast(resp.init_next.message || "初始化已完成", "success");
+      } else if (resp.init_next.success) {
+        toast(
+          resp.init_next.message || `迭代 ${resp.init_next.batch} 已生成`,
+          "success"
+        );
+      } else if (resp.init_next.error) {
+        toast(`下一批生成失败: ${resp.init_next.error}`, "warning");
       }
-      await loadProposals();
-      // 如果 init_next 生成了新提案，自动选中它
-      if (resp.init_next && resp.init_next.proposal_id) {
-        state.currentProposalId = resp.init_next.proposal_id;
-        renderProposalDetail();
-      } else {
-        state.currentProposalId = null;
-        renderProposalDetail();
-      }
+    }
+    await loadProposals();
+    // 如果 init_next 生成了新提案，自动选中它
+    if (resp.init_next && resp.init_next.proposal_id) {
+      state.currentProposalId = resp.init_next.proposal_id;
+      renderProposalDetail();
     } else {
-      toast(resp?.error || "操作失败", "error");
+      state.currentProposalId = null;
+      renderProposalDetail();
     }
   } catch (e) {
     toast(`操作失败: ${e.message}`, "error");
@@ -396,14 +389,10 @@ async function rejectProposal(id) {
   if (reason === null) return;
   try {
     const resp = await api.post("proposal/reject", { id, reason: reason || "" });
-    if (resp && resp.success) {
-      toast(resp.message || "已拒绝", "success");
-      await loadProposals();
-      state.currentProposalId = null;
-      renderProposalDetail();
-    } else {
-      toast(resp?.error || "操作失败", "error");
-    }
+    toast(resp.message || "已拒绝", "success");
+    await loadProposals();
+    state.currentProposalId = null;
+    renderProposalDetail();
   } catch (e) {
     toast(`操作失败: ${e.message}`, "error");
   }
@@ -418,16 +407,14 @@ async function rerollProposal(id) {
   try {
     const btn = $("btn-reroll");
     if (btn) btn.disabled = true;
+    // stalled 视为"软成功"：操作已完成但提案标记为 stalled，bridge 会将其作为 data 返回
     const resp = await api.post("proposal/reroll", { id, reason });
-    if (resp && resp.success) {
-      toast(resp.message || "已重新提议", "success");
-      await loadProposals();
-    } else if (resp && resp.stalled) {
+    if (resp.stalled) {
       toast(resp.error || "已超过最大重议次数", "warning");
-      await loadProposals();
     } else {
-      toast(resp?.error || "操作失败", "error");
+      toast(resp.message || "已重新提议", "success");
     }
+    await loadProposals();
   } catch (e) {
     toast(`操作失败: ${e.message}`, "error");
   } finally {
@@ -440,12 +427,8 @@ async function restartProposal(id) {
   if (!confirm("确认重启该提案？将清零重议计数并重新提议。")) return;
   try {
     const resp = await api.post("proposal/restart", { id });
-    if (resp && resp.success) {
-      toast(resp.message || "已重启", "success");
-      await loadProposals();
-    } else {
-      toast(resp?.error || "操作失败", "error");
-    }
+    toast(resp.message || "已重启", "success");
+    await loadProposals();
   } catch (e) {
     toast(`操作失败: ${e.message}`, "error");
   }
@@ -456,10 +439,8 @@ async function restartProposal(id) {
 async function loadSnapshots() {
   try {
     const resp = await api.get("snapshots", {});
-    if (resp && resp.success) {
-      state.snapshots = resp.data || [];
-      renderSnapshots();
-    }
+    state.snapshots = Array.isArray(resp) ? resp : [];
+    renderSnapshots();
   } catch (e) {
     toast(`加载快照失败: ${e.message}`, "error");
   }
@@ -505,12 +486,8 @@ async function rollbackSnapshot(id) {
   if (!confirm(`确认回滚到快照 #${id}？当前人设将保存为新快照以便撤销。`)) return;
   try {
     const resp = await api.post("snapshot/rollback", { id });
-    if (resp && resp.success) {
-      toast(resp.message || "已回滚", "success");
-      await loadSnapshots();
-    } else {
-      toast(resp?.error || "回滚失败", "error");
-    }
+    toast(resp.message || "已回滚", "success");
+    await loadSnapshots();
   } catch (e) {
     toast(`回滚失败: ${e.message}`, "error");
   }
@@ -521,10 +498,8 @@ async function rollbackSnapshot(id) {
 async function loadLogs() {
   try {
     const resp = await api.get("compact-log", {});
-    if (resp && resp.success) {
-      state.logs = resp.data || [];
-      renderLogs();
-    }
+    state.logs = Array.isArray(resp) ? resp : [];
+    renderLogs();
   } catch (e) {
     toast(`加载日志失败: ${e.message}`, "error");
   }
@@ -561,10 +536,8 @@ async function loadStatus() {
     '<div class="loading"><span class="spinner"></span>加载中...</div>';
   try {
     const resp = await api.get("status", {});
-    if (resp && resp.success) {
-      state.status = resp.data;
-      renderStatus();
-    }
+    state.status = resp;
+    renderStatus();
   } catch (e) {
     grid.innerHTML = `<div class="empty-state">加载失败: ${esc(
       e.message
@@ -632,12 +605,8 @@ async function triggerPatch() {
   }
   try {
     const resp = await api.post("trigger/patch", {});
-    if (resp && resp.success) {
-      toast(resp.message || "已触发", "success");
-      await loadProposals();
-    } else {
-      toast(resp?.error || "触发失败", "error");
-    }
+    toast(resp.message || "已触发", "success");
+    await loadProposals();
   } catch (e) {
     toast(`触发失败: ${e.message}`, "error");
   } finally {
@@ -656,12 +625,8 @@ async function triggerCompact() {
   }
   try {
     const resp = await api.post("trigger/compact", {});
-    if (resp && resp.success) {
-      toast(resp.message || "已触发", "success");
-      await loadLogs();
-    } else {
-      toast(resp?.error || "触发失败", "error");
-    }
+    toast(resp.message || "已触发", "success");
+    await loadLogs();
   } catch (e) {
     toast(`触发失败: ${e.message}`, "error");
   } finally {
@@ -694,11 +659,7 @@ async function loadInitState() {
     '<div class="loading"><span class="spinner"></span>加载中...</div>';
   try {
     const resp = await api.get("init/state", {});
-    if (resp && resp.success) {
-      renderInitState(resp.data);
-    } else {
-      container.innerHTML = '<div class="empty-state">加载失败</div>';
-    }
+    renderInitState(resp);
   } catch (e) {
     container.innerHTML = `<div class="empty-state">加载失败: ${esc(
       e.message
@@ -798,18 +759,14 @@ async function startPersonaInit() {
   }
   try {
     const resp = await api.post("init/persona/start", {});
-    if (resp && resp.success) {
-      if (resp.completed) {
-        toast(resp.message || "无需初始化，已全部处理", "success");
-      } else {
-        toast(resp.message || "初始化已启动", "success");
-        // 跳转到提案页面查看第一个提案
-        switchPage("proposals");
-      }
-      await loadInitState();
+    if (resp.completed) {
+      toast(resp.message || "无需初始化，已全部处理", "success");
     } else {
-      toast(resp?.error || "启动失败", "error");
+      toast(resp.message || "初始化已启动", "success");
+      // 跳转到提案页面查看第一个提案
+      switchPage("proposals");
     }
+    await loadInitState();
   } catch (e) {
     toast(`启动失败: ${e.message}`, "error");
   } finally {
@@ -829,14 +786,10 @@ async function startCompactInit() {
   }
   try {
     const resp = await api.post("init/compact/start", {});
-    if (resp && resp.success) {
-      toast(resp.message || "初始化已启动，后台运行中", "success");
-      await loadInitState();
-      // 开始轮询状态
-      pollInitState();
-    } else {
-      toast(resp?.error || "启动失败", "error");
-    }
+    toast(resp.message || "初始化已启动，后台运行中", "success");
+    await loadInitState();
+    // 开始轮询状态
+    pollInitState();
   } catch (e) {
     toast(`启动失败: ${e.message}`, "error");
   } finally {
@@ -851,12 +804,8 @@ async function cancelInit() {
   if (!confirm("确认取消初始化？正在处理的当前批次会完成后停止。")) return;
   try {
     const resp = await api.post("init/cancel", {});
-    if (resp && resp.success) {
-      toast(resp.message || "取消请求已发送", "success");
-      await loadInitState();
-    } else {
-      toast(resp?.error || "取消失败", "error");
-    }
+    toast(resp.message || "取消请求已发送", "success");
+    await loadInitState();
   } catch (e) {
     toast(`取消失败: ${e.message}`, "error");
   }
@@ -870,16 +819,14 @@ function pollInitState() {
   _initPollTimer = setInterval(async () => {
     try {
       const resp = await api.get("init/state", {});
-      if (resp && resp.success) {
-        renderInitState(resp.data);
-        if (resp.data.status !== "running") {
-          clearInterval(_initPollTimer);
-          _initPollTimer = null;
-          if (resp.data.status === "completed") {
-            toast("记忆压缩初始化已完成", "success");
-          } else if (resp.data.status === "cancelled") {
-            toast("记忆压缩初始化已取消", "info");
-          }
+      renderInitState(resp);
+      if (resp.status !== "running") {
+        clearInterval(_initPollTimer);
+        _initPollTimer = null;
+        if (resp.status === "completed") {
+          toast("记忆压缩初始化已完成", "success");
+        } else if (resp.status === "cancelled") {
+          toast("记忆压缩初始化已取消", "info");
         }
       }
     } catch (e) {
@@ -940,12 +887,10 @@ async function init() {
   // 同时加载状态更新 footer
   try {
     const resp = await api.get("status", {});
-    if (resp && resp.success) {
-      state.status = resp.data;
-      $("footer-info").textContent = state.status.lm_available
-        ? "LivingMemory 已连接"
-        : "LivingMemory 未连接";
-    }
+    state.status = resp;
+    $("footer-info").textContent = state.status.lm_available
+      ? "LivingMemory 已连接"
+      : "LivingMemory 未连接";
   } catch (e) {
     $("footer-info").textContent = "状态未知";
   }
