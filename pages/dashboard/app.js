@@ -118,6 +118,27 @@ function showModal(title, bodyHtml, actionsHtml = "") {
   });
 }
 
+// ── Theme ─────────────────────────────
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const iconDark = $("theme-icon-dark");
+  const iconLight = $("theme-icon-light");
+  if (iconDark) iconDark.classList.toggle("hidden", theme === "dark");
+  if (iconLight) iconLight.classList.toggle("hidden", theme !== "dark");
+}
+
+function initTheme() {
+  const saved = localStorage.getItem("theme") || "light";
+  applyTheme(saved);
+  $("theme-toggle")?.addEventListener("click", () => {
+    const current = document.documentElement.dataset.theme || "light";
+    const next = current === "dark" ? "light" : "dark";
+    applyTheme(next);
+    localStorage.setItem("theme", next);
+  });
+}
+
 // ── Page switching ──────────────────────
 
 function switchPage(pageName) {
@@ -175,7 +196,7 @@ function renderProposalList() {
   const container = $("proposal-list");
   if (state.proposals.length === 0) {
     container.innerHTML =
-      '<div class="empty-state"><div class="empty-state-icon">&#128196;</div><div>暂无提案</div></div>';
+      '<div class="empty-state"><svg class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><div>暂无提案</div></div>';
     return;
   }
 
@@ -226,7 +247,7 @@ function renderProposalDetail() {
 
   if (!proposal) {
     container.innerHTML =
-      '<div class="empty-state"><div class="empty-state-icon">&#128218;</div><div>从左侧选择一个提案查看详情</div></div>';
+      '<div class="empty-state"><svg class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><div>从左侧选择一个提案查看详情</div></div>';
     return;
   }
 
@@ -259,19 +280,19 @@ function renderProposalDetail() {
     actionsHtml = `
       <div class="action-row">
         <button class="btn btn-primary" id="btn-restart">重启提案</button>
-        <span style="color:var(--text-faint);font-size:12px;align-self:center">
+        <span style="color:var(--text-tertiary);font-size:12px;align-self:center">
           该提案已超过最大重议次数，重启后将清零计数并重新提议
         </span>
       </div>
     `;
   } else {
-    actionsHtml = `<div style="color:var(--text-faint);font-size:13px">该提案状态为「${
+    actionsHtml = `<div style="color:var(--text-tertiary);font-size:13px">该提案状态为「${
       proposal.status
     }」，不可再操作</div>`;
   }
 
   const rejectionHtml = proposal.rejection_reason
-    ? `<div style="margin-top:8px;font-size:12px;color:var(--orange)">打回理由: ${esc(
+    ? `<div style="margin-top:8px;font-size:12px;color:var(--warning)">打回理由: ${esc(
         proposal.rejection_reason
       )}</div>`
     : "";
@@ -283,7 +304,7 @@ function renderProposalDetail() {
         proposal.change_description || "(无变更说明)"
       )}</div>
       ${aspectsHtml}
-      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text-faint)">
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text-tertiary)">
         ${statusBadge(proposal.status)}
         <span>· 创建于 ${esc(proposal.created_at)}</span>
         <span>· Persona ID: ${esc(proposal.persona_id)}</span>
@@ -417,7 +438,7 @@ function renderSnapshots() {
   const tbody = $("snapshot-tbody");
   if (state.snapshots.length === 0) {
     tbody.innerHTML =
-      '<tr><td colspan="5" style="text-align:center;color:var(--text-faint);padding:40px">暂无快照</td></tr>';
+      '<tr><td colspan="5" style="text-align:center;color:var(--text-tertiary);padding:40px">暂无快照</td></tr>';
     return;
   }
 
@@ -428,7 +449,7 @@ function renderSnapshots() {
       <tr>
         <td class="col-id">#${s.id}</td>
         <td>${esc(s.persona_name)}</td>
-        <td style="color:var(--text-dim)">${esc(desc)}</td>
+        <td style="color:var(--text-secondary)">${esc(desc)}</td>
         <td class="col-time">${esc(s.created_at)}</td>
         <td class="col-action">
           <button class="btn btn-sm" onclick="window._lmpatch.viewSnapshot(${s.id})">查看</button>
@@ -482,7 +503,7 @@ function renderLogs() {
   const tbody = $("log-tbody");
   if (state.logs.length === 0) {
     tbody.innerHTML =
-      '<tr><td colspan="5" style="text-align:center;color:var(--text-faint);padding:40px">暂无压缩日志</td></tr>';
+      '<tr><td colspan="5" style="text-align:center;color:var(--text-tertiary);padding:40px">暂无压缩日志</td></tr>';
     return;
   }
 
@@ -492,8 +513,8 @@ function renderLogs() {
       <tr>
         <td class="col-id">#${log.id}</td>
         <td>${esc(log.persona_id)}</td>
-        <td style="color:var(--red)">${log.deleted_count} 条</td>
-        <td style="color:var(--green)">${log.created_count} 条</td>
+        <td style="color:var(--danger)">${log.deleted_count} 条</td>
+        <td style="color:var(--success)">${log.created_count} 条</td>
         <td class="col-time">${esc(log.created_at)}</td>
       </tr>
     `;
@@ -636,8 +657,11 @@ window._lmpatch = {
 // ── Init ────────────────────────────────
 
 async function init() {
+  // 初始化主题
+  initTheme();
+
   // 绑定导航
-  document.querySelectorAll(".nav-item").forEach((item) => {
+  document.querySelectorAll(".nav-item[data-page]").forEach((item) => {
     item.addEventListener("click", () => switchPage(item.dataset.page));
   });
 

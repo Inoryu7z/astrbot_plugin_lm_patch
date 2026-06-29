@@ -34,3 +34,4 @@
 * 压缩日志：查看每次压缩的删除/新增详情
 * 运行状态：LivingMemory 可用性、调度器状态、当前调度间隔
 * 12 个 Web API 路由，支持手动触发补丁与压缩周期
+* Notion 风设计系统：对齐 LivingMemory WebUI 风格，明暗双主题切换、SVG 图标、系统化设计 token

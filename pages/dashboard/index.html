@@ -8,56 +8,98 @@
   </head>
   <body>
     <div id="app">
+      <!-- Sidebar -->
       <aside class="sidebar">
-        <div class="sidebar-header">
-          <div class="sidebar-title">记忆演化</div>
-          <div class="sidebar-subtitle">LivingMemory Patch</div>
+        <div class="sidebar-brand">
+          记忆演化
+          <span class="sidebar-brand-sub">LM Patch</span>
         </div>
-        <nav class="nav" id="nav">
-          <div class="nav-item active" data-page="proposals">
+        <nav class="sidebar-nav" id="nav">
+          <button class="nav-item active" data-page="proposals">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <path d="m9 15 2 2 4-4"/>
+            </svg>
             <span>提案审批</span>
             <span class="nav-badge" id="badge-pending" style="display:none">0</span>
-          </div>
-          <div class="nav-item" data-page="snapshots">
+          </button>
+          <button class="nav-item" data-page="snapshots">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
+              <circle cx="12" cy="13" r="3"/>
+            </svg>
             <span>人设快照</span>
-          </div>
-          <div class="nav-item" data-page="logs">
+          </button>
+          <button class="nav-item" data-page="logs">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="8" y1="6" x2="21" y2="6"/>
+              <line x1="8" y1="12" x2="21" y2="12"/>
+              <line x1="8" y1="18" x2="21" y2="18"/>
+              <line x1="3" y1="6" x2="3.01" y2="6"/>
+              <line x1="3" y1="12" x2="3.01" y2="12"/>
+              <line x1="3" y1="18" x2="3.01" y2="18"/>
+            </svg>
             <span>压缩日志</span>
-          </div>
-          <div class="nav-item" data-page="status">
+          </button>
+          <button class="nav-item" data-page="status">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="7" height="9"/>
+              <rect x="14" y="3" width="7" height="5"/>
+              <rect x="14" y="12" width="7" height="9"/>
+              <rect x="3" y="16" width="7" height="5"/>
+            </svg>
             <span>运行状态</span>
-          </div>
+          </button>
         </nav>
-        <div class="sidebar-footer" id="footer-info">加载中...</div>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-footer">
+          <button class="nav-item" id="theme-toggle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" id="theme-icon-dark">
+              <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+            </svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" id="theme-icon-light" class="hidden">
+              <circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2m-6.93-15.07 1.41 1.41m11.04 11.04 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+            </svg>
+            <span>主题</span>
+          </button>
+          <div class="sidebar-info" id="footer-info">加载中...</div>
+        </div>
       </aside>
 
+      <!-- Main Content -->
       <main class="main-content">
+
         <!-- 提案审批页 -->
         <section class="page active" id="page-proposals">
-          <div class="page-header">
-            <div class="page-title">提案审批</div>
+          <header class="page-header">
+            <span class="page-title">提案审批</span>
             <div class="page-actions">
-              <button class="btn btn-sm" id="btn-refresh-proposals">刷新</button>
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-proposals">刷新</button>
               <button class="btn btn-primary btn-sm" id="btn-trigger-patch">手动触发补丁</button>
             </div>
-          </div>
-
-          <div class="filter-bar" id="proposal-filters">
-            <button class="filter-btn active" data-status="">全部</button>
-            <button class="filter-btn" data-status="pending">待审</button>
-            <button class="filter-btn" data-status="approved">已通过</button>
-            <button class="filter-btn" data-status="rejected">已拒绝</button>
-            <button class="filter-btn" data-status="stalled">无法收敛</button>
-          </div>
-
-          <div class="proposal-layout">
-            <div class="proposal-list" id="proposal-list">
-              <div class="loading"><span class="spinner"></span>加载中...</div>
+          </header>
+          <div class="page-body">
+            <div class="filter-bar" id="proposal-filters">
+              <button class="filter-btn active" data-status="">全部</button>
+              <button class="filter-btn" data-status="pending">待审</button>
+              <button class="filter-btn" data-status="approved">已通过</button>
+              <button class="filter-btn" data-status="rejected">已拒绝</button>
+              <button class="filter-btn" data-status="stalled">无法收敛</button>
             </div>
-            <div class="proposal-detail" id="proposal-detail">
-              <div class="empty-state">
-                <div class="empty-state-icon">&#128218;</div>
-                <div>从左侧选择一个提案查看详情</div>
+
+            <div class="proposal-layout">
+              <div class="proposal-list" id="proposal-list">
+                <div class="loading"><span class="spinner"></span>加载中...</div>
+              </div>
+              <div class="proposal-detail" id="proposal-detail">
+                <div class="empty-state">
+                  <svg class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                  <div>从左侧选择一个提案查看详情</div>
+                </div>
               </div>
             </div>
           </div>
@@ -65,67 +107,73 @@
 
         <!-- 人设快照页 -->
         <section class="page" id="page-snapshots">
-          <div class="page-header">
-            <div class="page-title">人设快照</div>
+          <header class="page-header">
+            <span class="page-title">人设快照</span>
             <div class="page-actions">
-              <button class="btn btn-sm" id="btn-refresh-snapshots">刷新</button>
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-snapshots">刷新</button>
             </div>
-          </div>
-          <div class="card">
-            <table class="data-table" id="snapshot-table">
-              <thead>
-                <tr>
-                  <th class="col-id">#</th>
-                  <th>Persona</th>
-                  <th>变更说明</th>
-                  <th class="col-time">创建时间</th>
-                  <th class="col-action">操作</th>
-                </tr>
-              </thead>
-              <tbody id="snapshot-tbody">
-                <tr><td colspan="5" style="text-align:center;color:var(--text-faint);padding:40px">加载中...</td></tr>
-              </tbody>
-            </table>
+          </header>
+          <div class="page-body">
+            <div class="card">
+              <table class="data-table" id="snapshot-table">
+                <thead>
+                  <tr>
+                    <th class="col-id">#</th>
+                    <th>Persona</th>
+                    <th>变更说明</th>
+                    <th class="col-time">创建时间</th>
+                    <th class="col-action">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="snapshot-tbody">
+                  <tr><td colspan="5" style="text-align:center;color:var(--text-tertiary);padding:40px">加载中...</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
 
         <!-- 压缩日志页 -->
         <section class="page" id="page-logs">
-          <div class="page-header">
-            <div class="page-title">压缩日志</div>
+          <header class="page-header">
+            <span class="page-title">压缩日志</span>
             <div class="page-actions">
-              <button class="btn btn-sm" id="btn-refresh-logs">刷新</button>
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-logs">刷新</button>
               <button class="btn btn-primary btn-sm" id="btn-trigger-compact">手动触发压缩</button>
             </div>
-          </div>
-          <div class="card">
-            <table class="data-table" id="log-table">
-              <thead>
-                <tr>
-                  <th class="col-id">#</th>
-                  <th>Persona</th>
-                  <th>删除条数</th>
-                  <th>新增条数</th>
-                  <th class="col-time">执行时间</th>
-                </tr>
-              </thead>
-              <tbody id="log-tbody">
-                <tr><td colspan="5" style="text-align:center;color:var(--text-faint);padding:40px">加载中...</td></tr>
-              </tbody>
-            </table>
+          </header>
+          <div class="page-body">
+            <div class="card">
+              <table class="data-table" id="log-table">
+                <thead>
+                  <tr>
+                    <th class="col-id">#</th>
+                    <th>Persona</th>
+                    <th>删除条数</th>
+                    <th>新增条数</th>
+                    <th class="col-time">执行时间</th>
+                  </tr>
+                </thead>
+                <tbody id="log-tbody">
+                  <tr><td colspan="5" style="text-align:center;color:var(--text-tertiary);padding:40px">加载中...</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
 
         <!-- 运行状态页 -->
         <section class="page" id="page-status">
-          <div class="page-header">
-            <div class="page-title">运行状态</div>
+          <header class="page-header">
+            <span class="page-title">运行状态</span>
             <div class="page-actions">
-              <button class="btn btn-sm" id="btn-refresh-status">刷新</button>
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-status">刷新</button>
             </div>
-          </div>
-          <div class="status-grid" id="status-grid">
-            <div class="loading"><span class="spinner"></span>加载中...</div>
+          </header>
+          <div class="page-body">
+            <div class="status-grid" id="status-grid">
+              <div class="loading"><span class="spinner"></span>加载中...</div>
+            </div>
           </div>
         </section>
       </main>
