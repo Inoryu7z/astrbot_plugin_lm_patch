@@ -253,8 +253,12 @@ class LMClient:
     async def get_active_persona_ids(self, days: int = 30) -> list[str]:
         """获取最近 N 天内有记忆新增的 persona_id 列表（去重）。
 
-        用于初始化流程：只对近期活跃的 persona 初始化，跳过已被用户抛弃的 persona。
+        用于初始化流程与正常压缩周期：只对近期活跃的 persona 处理，跳过已被用户抛弃的 persona。
         documents.created_at 为 TEXT 类型（ISO 格式），用 datetime() 函数比较。
+
+        排除 memory_origin='lm_patch_compact' 的压缩摘要记忆：压缩自身产生的记忆
+        不应算作"用户真实活跃"，否则被压缩过的 persona 会被永远判定为近期活跃，
+        导致"跳过近期无更新的 persona"逻辑永远不生效。
         """
         if aiosqlite is None:
             return []
@@ -274,6 +278,7 @@ class LMClient:
                     "FROM documents "
                     "WHERE json_extract(metadata, '$.persona_id') IS NOT NULL "
                     "AND json_extract(metadata, '$.persona_id') != '' "
+                    "AND json_extract(metadata, '$.memory_origin') IS NOT 'lm_patch_compact' "
                     "AND created_at IS NOT NULL "
                     "AND datetime(created_at) >= datetime('now', ?)",
                     (f"-{days} days",),

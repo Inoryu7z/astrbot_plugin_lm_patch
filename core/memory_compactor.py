@@ -77,9 +77,12 @@ class MemoryCompactor:
             logger.info("[LMPatch] 初始化进行中，跳过记忆压缩周期")
             return 0
 
-        persona_ids = await self.lm_client.get_all_persona_ids()
+        # 只处理近 30 天有真实记忆更新的 persona，跳过已被用户抛弃的 persona。
+        # get_active_persona_ids 已排除 memory_origin='lm_patch_compact' 的压缩摘要，
+        # 避免压缩自身产生的记忆被误判为"近期活跃"导致跳过逻辑失效。
+        persona_ids = await self.lm_client.get_active_persona_ids(days=30)
         if not persona_ids:
-            logger.info("[LMPatch] 未发现任何 persona_id，跳过记忆压缩周期")
+            logger.info("[LMPatch] 未发现近 30 天活跃的 persona_id，跳过记忆压缩周期")
             return 0
 
         compact_count = 0
