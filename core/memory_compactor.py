@@ -51,7 +51,7 @@ class MemoryCompactor:
 
     @property
     def importance_threshold(self) -> float:
-        return float(self.config.get("memory_compact_importance_threshold", 0.5))
+        return float(self.config.get("memory_compact_importance_threshold", 0.3))
 
     @property
     def min_count(self) -> int:
@@ -440,10 +440,11 @@ class MemoryCompactor:
         return {"success": True, "message": "初始化取消请求已发送，后台任务将在当前批次完成后停止"}
 
     def _format_memories(self, memories: list[dict]) -> str:
-        """格式化记忆列表为 LLM 可读文本，包含会话ID和人格风格摘要。
+        """格式化记忆列表为 LLM 可读文本，包含会话ID、来源和人格风格摘要。
 
         优先使用 metadata.persona_summary（第一人称人格风格摘要），
         回退到 text（canonical_summary，中性检索版本）。
+        增加 [来源:xxx] 标记，让 LLM 区分 daymind 虚构日记与真实对话记忆。
         """
         lines = []
         for m in memories:
@@ -452,11 +453,13 @@ class MemoryCompactor:
             created = m.get("created_at", "")
             session_id = meta.get("session_id", "未知")
             interaction_type = meta.get("interaction_type", "unknown")
+            # 来源标记：daymind 日记有 source="daymind"，真实对话无此字段
+            source = meta.get("source", "unknown")
             # 优先使用 persona_summary（第一人称人格风格），回退到 text
             persona_summary = meta.get("persona_summary", "")
             text = persona_summary if persona_summary else m.get("text", "")
             lines.append(
-                f"[#{m.get('id', '?')}][会话:{session_id}]"
+                f"[#{m.get('id', '?')}][来源:{source}][会话:{session_id}]"
                 f"[重要性:{importance}][类型:{interaction_type}][{created}] {text}"
             )
         return "\n".join(lines)

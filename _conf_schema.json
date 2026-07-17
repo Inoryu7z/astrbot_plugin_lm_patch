@@ -46,8 +46,8 @@
   "memory_compact_importance_threshold": {
     "description": "压缩重要性阈值",
     "type": "float",
-    "default": 0.5,
-    "hint": "重要性低于此值的记忆才会被纳入压缩。建议高于 LivingMemory 的清理阈值（默认 0.3），以在记忆被删除前抢救信息。"
+    "default": 0.3,
+    "hint": "重要性低于此值的记忆才会被纳入压缩。默认 0.3 与 LivingMemory 清理阈值一致：记忆重要性会随时间衰减，衰减到此值时被压缩成摘要保留，低于此值则被 LivingMemory 清理。daymind 日记初始重要性 0.4，衰减约 10 天后到达此阈值被压缩。"
   },
   "memory_compact_min_count": {
     "description": "触发压缩的最小记忆条数",
