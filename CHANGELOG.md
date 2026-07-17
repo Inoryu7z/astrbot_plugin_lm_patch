@@ -1,3 +1,18 @@
+### v1.1.3
+
+**🐛 修复 /reset 后 livingmemory 会话不清理的问题**
+
+AstrBot 4.26+ 把 `/reset` 命令的 extra 信号键名从 `_clean_ltm_session` 重构为 `_clean_group_context_session`，但 livingmemory 2.3.5 仍监听旧键名 `_clean_ltm_session`，导致 `/reset` 后 livingmemory 的 `handle_session_reset` 钩子永远不触发，`conversation_manager.clear_session()` 从未执行，旧对话消息仍留在 livingmemory 自己的 SQLite 数据库中，最终被总结进长期记忆（用户反馈"a今天叫我去吃烧烤"在 /reset 后仍被记入）。
+
+**修复方案**：在 lm_patch 新增 `after_message_sent` 钩子 `handle_session_reset_patch`，监听新键名 `_clean_group_context_session`，触发后调用 livingmemory 的 `event_handler.handle_session_reset(event)` 完成清理。
+
+* 新增 `@filter.after_message_sent()` 钩子，监听 `_clean_group_context_session` 信号
+* 通过 `LMClient.get_plugin()` 获取 livingmemory 插件实例，调用其 `event_handler.handle_session_reset(event)`
+* 钩子快速返回：非 reset 信号时第一行即 return，性能开销可忽略
+* 向后兼容：若未来 livingmemory 修复键名，两个钩子都会触发但 `clear_session` 是幂等的，双触发安全
+
+---
+
 ### v1.1.2
 
 **🧠 记忆压缩源感知 + 压缩阈值下调**

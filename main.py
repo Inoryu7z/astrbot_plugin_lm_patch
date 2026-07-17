@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from astrbot.api import logger
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, StarTools, register
 
 from .config import (
@@ -149,3 +150,36 @@ class LMPatchPlugin(Star):
 
         self._initialized = False
         logger.info("[LMPatch] 插件已停止")
+
+    # ==================== 事件钩子（补丁） ====================
+
+    @filter.after_message_sent()
+    async def handle_session_reset_patch(self, event: AstrMessageEvent):
+        """[Patch] 兼容 AstrBot 4.26+ 的 /reset 信号键名变更。
+
+        AstrBot 在某次版本升级中把 /reset 的 extra 键名从 _clean_ltm_session
+        改为 _clean_group_context_session，但 livingmemory 2.3.5 仍监听旧键名，
+        导致 /reset 后 livingmemory 的会话清理钩子不触发，旧对话消息仍留在
+        livingmemory 自己的数据库里，最终被总结进长期记忆。
+
+        本钩子监听新键名 _clean_group_context_session，触发后调用 livingmemory
+        的 event_handler.handle_session_reset 完成清理。
+        """
+        if not event.get_extra("_clean_group_context_session", False):
+            return
+
+        plugin = await self.lm_client.get_plugin()
+        if plugin is None:
+            logger.debug("[LMPatch] /reset 补丁：livingmemory 插件不可用，跳过")
+            return
+
+        event_handler = getattr(plugin, "event_handler", None)
+        if event_handler is None:
+            logger.debug("[LMPatch] /reset 补丁：livingmemory 无 event_handler，跳过")
+            return
+
+        try:
+            await event_handler.handle_session_reset(event)
+            logger.info("[LMPatch] 已通过补丁钩子触发 livingmemory 会话清理（_clean_group_context_session）")
+        except Exception as e:
+            logger.warning(f"[LMPatch] 通过补丁钩子触发 livingmemory 会话清理失败: {e}")
