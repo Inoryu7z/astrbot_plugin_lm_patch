@@ -1,3 +1,23 @@
+### v1.1.4
+
+**🧠 同步 amnesia /forget 到 livingmemory**
+
+amnesia 插件（`astrbot_plugin_llm_amnesia`）的 `/forget` 命令只清 AstrBot 的 `conversation_manager`（删除 `conversation_history` 最新 N 轮），完全不触碰 livingmemory 的独立 SQLite 数据库。导致被 `/forget` 的对话仍留在 livingmemory 中，仍被计入 `unsummarized_rounds`，最终被总结进长期记忆——与之前 `/reset` 的问题同构。
+
+**修复方案**：在 lm_patch 新增 `after_message_sent` 钩子 `handle_forget_patch`，监听 `/forget` 命令执行后，同步删除 livingmemory 中对应的最新 N 轮消息。
+
+* 新增 `@filter.after_message_sent()` 钩子，检测 `/forget` 命令（正则匹配，排除 `/forget_status`、`/forget_help`、`/cancel_forget`）
+* 解析 `round_count` 参数（默认 1，范围 1-10，与 amnesia 一致）
+* 通过 `LMClient.get_plugin()` 获取 livingmemory 插件实例，访问 `event_handler.conversation_manager.store`
+* 从后往前查找 N 个 `user + assistant` 消息对（与 amnesia 的轮次查找算法一致）
+* 加 store 写锁，事务内删除消息 + 更新 `sessions.message_count`
+* 清除 conversation_manager 的 LRU 缓存，确保下次读取重新加载
+* `unsummarized_rounds` 会随消息删除自动减少（`unsummarized = total - last_summarized_index`），被 forget 的对话不再计入总结轮次
+
+**⚠️ 已知限制**：不兼容 amnesia 的 `/cancel_forget` 反悔机制。反悔时 AstrBot 侧恢复，但 livingmemory 侧不恢复。影响是"少记"而非"记错"，可接受（反悔场景极少，且少记不会污染记忆）。
+
+---
+
 ### v1.1.3
 
 **🐛 修复 /reset 后 livingmemory 会话不清理的问题**
