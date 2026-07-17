@@ -199,6 +199,7 @@ daymind 日记是 LLM 基于日程生成的虚构内容，其中涉及的事件*
       "participants": ["参与者1", "参与者2"],
       "sentiment": "positive|neutral|negative",
       "importance": 0.7,
+      "source": "daymind|unknown|mixed",
       "source_session_ids": ["会话ID1", "会话ID2"],
       "source_count": 3,
       "reason": "为什么给予这个重要性分数"
@@ -214,6 +215,7 @@ daymind 日记是 LLM 基于日程生成的虚构内容，其中涉及的事件*
 - `participants`: 参与者列表（群聊时列出所有参与者昵称，私聊可留空数组）
 - `sentiment`: 整体氛围（positive/neutral/negative）
 - `importance`: 重要性评分（0.0-1.0，保留1-2位小数）
+- `source`: 该摘要合并的记忆来源（`daymind`=全部来自虚构日记，`unknown`=全部来自真实对话或无来源标记，`mixed`=混合来源）
 - `source_session_ids`: 所有被合并记忆的会话ID列表（从输入的[会话:xxx]中提取）
 - `source_count`: 该摘要合并了几条原始记忆
 - `reason`: 重要性评分的理由
@@ -222,6 +224,7 @@ daymind 日记是 LLM 基于日程生成的虚构内容，其中涉及的事件*
 
 - **summary 必须使用第一人称视角**，自然描述你观察到的互动，并体现人格特点
 - **必须使用具体的昵称**：在 summary 和 key_facts 中，必须使用记忆中出现的具体昵称（如"张三"、"李四"），**绝对不能**用"用户"、"对方"、"某人"、"群成员"等泛化词汇替代
+- **source 必须正确标记**：根据该摘要合并的记忆来源填写。全部来自 `[来源:daymind]` 的填 `daymind`，全部来自 `[来源:unknown]` 或其他的填 `unknown`，混合的填 `mixed`。**此字段确保下次压缩时仍能识别 daymind 日记并采取激进策略**
 - **source_session_ids 必须完整**：列出所有被合并记忆的会话ID，从输入的[会话:xxx]标记中提取
 - **信息保全是最高优先级**：summary 必须包含所有关键信息，**不能为了简短而丢失任何重要细节**。如果信息量大，summary 可以适当长，不要人为压缩字数
 - **key_facts 必须完整**：列出该摘要涉及的所有关键事实，不能只挑几条

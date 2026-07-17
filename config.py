@@ -1,6 +1,6 @@
 PLUGIN_NAME = "astrbot_plugin_lm_patch"
 PLUGIN_DISPLAY_NAME = "记忆演化"
-PLUGIN_VERSION = "1.1.4"
+PLUGIN_VERSION = "1.1.5"
 PLUGIN_AUTHOR = "Inoryu7z"
 PLUGIN_REPO = "https://github.com/Inoryu7z/astrbot_plugin_lm_patch"
 PLUGIN_DESCRIPTION = "基于 LivingMemory 的记忆演化插件：周期性读取记忆提出人设变更，并自动压缩低重要性记忆。"

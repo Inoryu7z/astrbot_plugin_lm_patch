@@ -1,3 +1,28 @@
+### v1.1.5
+
+**🐛 修复压缩摘要 source 字段未传递的问题**
+
+v1.1.2 引入的源感知压缩策略存在遗留问题：压缩后生成的新摘要 metadata 中**没有 `source` 字段**，导致 daymind 日记被压缩后，下次再被压缩时 `_format_memories` 读取到的是 `来源:unknown`，LLM 会把它当真实对话处理，削弱了源感知策略的效果。
+
+**修复方案**：提示词新增 `source` 输出字段 + 代码回退到整批级别判断。
+
+* `prompts.py` `MEMORY_COMPACT_SYSTEM_PROMPT`：
+  - 输出格式 JSON 新增 `"source": "daymind|unknown|mixed"` 字段
+  - 字段说明新增 `source` 字段（daymind=全部来自虚构日记，unknown=全部来自真实对话，mixed=混合来源）
+  - 关键要求新增"source 必须正确标记"，要求 LLM 根据合并的记忆来源填写
+* `core/memory_compactor.py` `_compact_memories`：
+  - 收集原始记忆的 `source` 字段到 `source_set`
+  - 整批级别回退：若所有原始记忆 source 相同（如全是 daymind）则继承该值，混合或全无则 None
+  - 每个摘要优先使用 LLM 输出的 `source`，若 LLM 未输出则回退到 `batch_source`
+  - `metadata["source"]` 写入最终 source 值（None 时不写入，默认 unknown）
+
+**回退策略说明**：
+* LLM 输出有效 source（daymind/unknown/mixed）→ 使用 LLM 输出
+* LLM 未输出 + 整批同质 → 继承整批 source
+* LLM 未输出 + 整批混合/全无 → 不写入 source（默认 unknown，用真实对话策略保守处理）
+
+---
+
 ### v1.1.4
 
 **🧠 同步 amnesia /forget 到 livingmemory**

@@ -185,12 +185,20 @@ class MemoryCompactor:
         original_ids = [m["id"] for m in memories]
         created_ids: list[int] = []
 
-        # 收集所有来源记忆的会话ID，用于为新摘要选择 session_id
+        # 收集所有来源记忆的会话ID和source，用于为新摘要选择 session_id 和 source
         source_session_list: list[str] = []
+        source_set: set[str] = set()
         for m in memories:
-            sid = (m.get("metadata", {}) or {}).get("session_id")
+            meta = m.get("metadata", {}) or {}
+            sid = meta.get("session_id")
             if sid:
                 source_session_list.append(sid)
+            src = meta.get("source")
+            if src:
+                source_set.add(str(src))
+
+        # 整批级别 source 回退：若所有原始记忆 source 相同则继承，混合或全无则 None（默认 unknown）
+        batch_source = next(iter(source_set)) if len(source_set) == 1 else None
 
         for idx, summary in enumerate(summaries):
             if not isinstance(summary, dict):
@@ -269,6 +277,16 @@ class MemoryCompactor:
             else:
                 new_session_id = None
 
+            # 确定新摘要的 source：
+            # 优先使用 LLM 输出的 source，回退到整批级别判断
+            llm_source = str(summary.get("source", "")).strip().lower()
+            if llm_source in ("daymind", "unknown", "mixed"):
+                new_source = llm_source
+            elif batch_source:
+                new_source = batch_source
+            else:
+                new_source = None  # 默认 unknown，不写入 metadata
+
             # 构建 metadata，与 LivingMemory 的格式对齐
             metadata = {
                 "importance": importance,
@@ -287,6 +305,8 @@ class MemoryCompactor:
             }
             if participants:
                 metadata["participants"] = participants
+            if new_source:
+                metadata["source"] = new_source
 
             new_id = await self.lm_client.add_memory(
                 content=canonical_summary,
