@@ -279,6 +279,7 @@ class MemoryCompactor:
             importance = max(0.0, min(1.0, importance))
 
             # 日记池强制 clamp 重要性到 0.5 以下（提示词已要求，代码兜底）
+            # 超过上限 0.5 时 clamp 到标准区间 0.4（而非 0.5），作为 LLM 不遵守提示词的保守回退
             if batch_kind == "daymind" and importance > 0.5:
                 logger.debug(
                     f"[LMPatch] persona '{persona_id}' 日记压缩摘要重要性 {importance} "
