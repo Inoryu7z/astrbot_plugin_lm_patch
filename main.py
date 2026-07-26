@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from astrbot.api import logger
@@ -18,6 +19,10 @@ from .config import (
     PLUGIN_NAME,
     PLUGIN_REPO,
     PLUGIN_VERSION,
+)
+from .core.diary_filter import (
+    install_with_retries as install_diary_filter_with_retries,
+    uninstall_diary_filter,
 )
 from .core.llm_helper import LLMHelper
 from .core.lm_client import LMClient
@@ -91,6 +96,10 @@ class LMPatchPlugin(Star):
             config=self.config,
         )
 
+        # 日记过滤补丁：后台安装任务与已安装的 engine 引用（用于 terminate 时卸载）
+        self._diary_filter_task: asyncio.Task | None = None
+        self._diary_filter_engine: Any = None
+
         # 标记是否完成初始化
         self._initialized = False
 
@@ -111,14 +120,74 @@ class LMPatchPlugin(Star):
             # 3. 启动后台周期调度
             await self.scheduler.start()
 
+            # 4. 启动日记过滤补丁安装任务（后台等待 livingmemory 就绪后安装）
+            self._start_diary_filter_install()
+
             self._initialized = True
             logger.info(
                 f"[LMPatch] 初始化完成："
                 f"人设补丁={'on' if self.scheduler.patch_enabled else 'off'}，"
-                f"记忆压缩={'on' if self.scheduler.compact_enabled else 'off'}"
+                f"记忆压缩={'on' if self.scheduler.compact_enabled else 'off'}，"
+                f"日记过滤={'on' if self._diary_filter_enabled else 'off'}"
             )
         except Exception as e:
             logger.error(f"[LMPatch] 初始化失败: {e}", exc_info=True)
+
+    # ==================== 日记过滤补丁 ====================
+
+    @property
+    def _diary_filter_enabled(self) -> bool:
+        """日记过滤补丁是否启用。"""
+        return bool(self.config.get("diary_filter_enable", True))
+
+    @property
+    def _diary_filter_max(self) -> int:
+        """检索结果中允许的最大日记条数。"""
+        try:
+            value = int(self.config.get("diary_filter_max_in_recall", 1))
+            return max(0, value)
+        except (TypeError, ValueError):
+            return 1
+
+    def _start_diary_filter_install(self) -> None:
+        """启动后台任务安装日记过滤补丁。
+
+        livingmemory 的初始化是异步的，可能在 lm_patch 加载后才完成。
+        本方法创建后台任务，周期性尝试获取 memory_engine 并安装补丁。
+        """
+        if not self._diary_filter_enabled:
+            logger.info("[LMPatch] 日记过滤补丁未启用（配置 diary_filter_enable=false）")
+            return
+
+        if self._diary_filter_task is not None and not self._diary_filter_task.done():
+            return  # 已在安装中
+
+        max_diaries = self._diary_filter_max
+        self._diary_filter_task = asyncio.create_task(
+            self._install_diary_filter_loop(max_diaries)
+        )
+        self._diary_filter_task.set_name("lm_patch_diary_filter_install")
+
+    async def _install_diary_filter_loop(self, max_diaries: int) -> None:
+        """后台循环：等待 livingmemory 就绪后安装日记过滤补丁。"""
+        try:
+            success = await install_diary_filter_with_retries(
+                get_engine_fn=self.lm_client.get_memory_engine,
+                max_diaries=max_diaries,
+                max_attempts=20,
+                interval=30.0,
+            )
+            if success:
+                # 记录已安装的 engine 引用，便于 terminate 时卸载
+                try:
+                    self._diary_filter_engine = await self.lm_client.get_memory_engine()
+                except Exception:
+                    self._diary_filter_engine = None
+        except asyncio.CancelledError:
+            logger.debug("[LMPatch] 日记过滤补丁安装任务被取消")
+            raise
+        except Exception as e:
+            logger.warning(f"[LMPatch] 日记过滤补丁安装任务异常: {e}", exc_info=True)
 
     async def terminate(self) -> None:
         """插件停止：先停止调度器与初始化任务，再关闭数据库连接。"""
@@ -142,7 +211,26 @@ class LMPatchPlugin(Star):
         except Exception as e:
             logger.warning(f"[LMPatch] 取消压缩初始化任务时出错: {e}")
 
-        # 3. 关闭本地数据库
+        # 3. 取消日记过滤补丁安装任务并卸载已安装的补丁
+        try:
+            if self._diary_filter_task is not None and not self._diary_filter_task.done():
+                self._diary_filter_task.cancel()
+                try:
+                    await self._diary_filter_task
+                except Exception:
+                    pass
+            self._diary_filter_task = None
+        except Exception as e:
+            logger.warning(f"[LMPatch] 取消日记过滤安装任务时出错: {e}")
+
+        try:
+            if self._diary_filter_engine is not None:
+                uninstall_diary_filter(self._diary_filter_engine)
+                self._diary_filter_engine = None
+        except Exception as e:
+            logger.warning(f"[LMPatch] 卸载日记过滤补丁时出错: {e}")
+
+        # 4. 关闭本地数据库
         try:
             await self.store.close()
         except Exception as e:

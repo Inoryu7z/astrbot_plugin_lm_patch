@@ -60,5 +60,17 @@
     "type": "int",
     "default": 24,
     "hint": "多久检查一次是否有足够的低重要性记忆需要压缩。"
+  },
+  "diary_filter_enable": {
+    "description": "启用日记过滤补丁",
+    "type": "bool",
+    "default": true,
+    "hint": "启用后，将包装 LivingMemory 的 search_memories，限制单次检索结果中来自 daymind 的日记条目数量。日记是 daymind 生成的虚拟记忆，召回过多会稀释真实对话记忆占比，默认压制。"
+  },
+  "diary_filter_max_in_recall": {
+    "description": "单次检索允许返回的最大日记条数",
+    "type": "int",
+    "default": 1,
+    "hint": "LivingMemory 单次检索结果中允许保留的日记条目数量。默认 1：即使检索结果全是日记且匹配率极高，也最多只返回 1 条，其余日记被压制。设为 0 表示全部过滤日记，设为较大值相当于关闭过滤。"
   }
 }

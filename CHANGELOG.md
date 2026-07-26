@@ -1,3 +1,36 @@
+### v1.1.6
+
+**🛡️ 日记过滤补丁：检索结果中日记条目数量压制**
+
+daymind 插件每日生成虚拟日记存入 LivingMemory，这些日记是虚构内容而非真实对话。若检索时与真实对话记忆同等返回，会稀释真实记忆占比、让模型基于虚构内容作答。本次新增"日记过滤补丁"，通过 monkey-patch 包装 `MemoryEngine.search_memories`，在检索结果返回前过滤掉多余的日记条目。
+
+**核心行为**：单次检索结果中最多保留 `diary_filter_max_in_recall` 条日记（默认 1）。即使记忆库中只有日记且全部召回匹配率极高，也只返回 1 条日记，其余被压制。日记识别口径为 `metadata.source=="daymind"` 或 `metadata.type=="diary"` 任一命中，覆盖原始日记、压缩后的日记摘要（v1.1.5 起 lm_patch 压缩会保留 source 字段）以及未来可能出现的其他 daymind 衍生记忆。
+
+**1. 🔧 实现机制**
+
+* 新增 `core/diary_filter.py`：核心过滤逻辑、安装/卸载/重试机制
+  - `install_diary_filter(engine, max_diaries)`：包装 `engine.search_memories`，返回结果中最多保留 `max_diaries` 条日记
+  - `install_with_retries(get_engine_fn, max_diaries, ...)`：周期性尝试获取 `memory_engine` 并安装补丁，应对 livingmemory 异步初始化未就绪的场景
+  - `uninstall_diary_filter(engine)`：恢复原始 `search_memories`，用于插件 terminate
+  - 已安装补丁的 `max_diaries` 变化时自动重新包装；过滤逻辑异常时降级返回原始结果，不阻断检索
+* `main.py` 集成生命周期：
+  - `initialize()` 启动后台任务 `_install_diary_filter_loop`，等待 livingmemory 就绪后安装补丁
+  - `terminate()` 取消安装任务 + 卸载已安装补丁，恢复原始 `search_memories`
+  - 后台任务最多尝试 20 次 × 间隔 30 秒（共 10 分钟），覆盖 livingmemory 初始化时间
+
+**2. ⚙️ 配置项（`_conf_schema.json` 新增 2 项）**
+
+* `diary_filter_enable`（默认 `true`）：是否启用日记过滤补丁
+* `diary_filter_max_in_recall`（默认 `1`）：单次检索允许保留的日记条数。设为 0 表示全部过滤，设为较大值相当于关闭过滤
+
+**3. 📌 设计哲学**
+
+* **压制而非清除**：日记仍参与检索（保留 1 条），让角色"活过来"的设计意图得以保留
+* **零侵入 LivingMemory**：通过 monkey-patch 包装 `search_memories`，不修改 livingmemory 任何代码
+* **降级安全**：过滤逻辑异常时降级返回原始结果，不阻断检索链路
+
+---
+
 ### v1.1.5
 
 **🐛 修复压缩摘要 source 字段未传递的问题**
