@@ -178,16 +178,47 @@ class LMClient:
         persona_id: str,
         importance_threshold: float,
         limit: int = 100,
+        source_filter: str | None = None,
+        max_generation: int | None = None,
     ) -> list[dict[str, Any]]:
-        """列出指定 persona 下重要性低于阈值的记忆。"""
+        """列出指定 persona 下重要性低于阈值的记忆。
+
+        Args:
+            source_filter: 来源过滤，用于双池压缩分离。
+                - "daymind": 只查 source="daymind" 的日记记忆
+                - "conversation": 只查非日记记忆（source 为 None/unknown/mixed 或其他值）
+                - None: 不过滤（兼容旧调用）
+            max_generation: 压缩代数上限（v1.1.6 新增），用于限制最大压缩轮数。
+                - 0: 只查原始记忆（generation=0，即无 compact_generation 字段）
+                - 1: 只查 generation<=1 的记忆（原始 + 一次摘要）
+                - None: 不过滤（兼容旧调用）
+                日记池用 0（只压一次），对话池用 1（最多压两次）。
+        """
         where = (
             "json_extract(metadata, '$.persona_id') = ? "
             "AND json_extract(metadata, '$.importance') < ? "
             "AND (json_extract(metadata, '$.status') = 'active' "
             "     OR json_extract(metadata, '$.status') IS NULL)"
         )
+        params: list = [persona_id, importance_threshold]
+        if source_filter == "daymind":
+            where += " AND json_extract(metadata, '$.source') = 'daymind'"
+        elif source_filter == "conversation":
+            # IS NOT 是 null-safe 不等：NULL IS NOT 'daymind' → true
+            where += (
+                " AND (json_extract(metadata, '$.source') IS NULL "
+                "OR json_extract(metadata, '$.source') IS NOT 'daymind')"
+            )
+        if max_generation is not None:
+            # compact_generation 字段不存在的视为 0（原始记忆）
+            # 用 COALESCE 处理 NULL：NULLIF(...,'') 把空字符串转 NULL，COALESCE 转 '0'
+            where += (
+                " AND CAST(COALESCE(NULLIF("
+                "json_extract(metadata, '$.compact_generation'), ''), '0') AS INTEGER) <= ?"
+            )
+            params.append(max_generation)
         return await self._query_documents(
-            where, (persona_id, importance_threshold), limit
+            where, tuple(params), limit
         )
 
     async def get_max_memory_id(self, persona_id: str) -> int:

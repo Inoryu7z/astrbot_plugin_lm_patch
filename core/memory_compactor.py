@@ -12,7 +12,8 @@ from typing import Any
 from astrbot.api import logger
 
 from ..prompts import (
-    MEMORY_COMPACT_SYSTEM_PROMPT,
+    MEMORY_COMPACT_SYSTEM_PROMPT_CONVERSATION,
+    MEMORY_COMPACT_SYSTEM_PROMPT_DIARY,
     MEMORY_COMPACT_USER_TEMPLATE,
     extract_json,
 )
@@ -99,7 +100,13 @@ class MemoryCompactor:
         return compact_count
 
     async def _compact_single_persona(self, persona_id: str) -> bool:
-        """处理单个 persona 的记忆压缩。返回是否执行了压缩。"""
+        """处理单个 persona 的记忆压缩。返回是否执行了压缩。
+
+        v1.1.6 起，日记与对话分池压缩：
+        - 日记池（source="daymind"）：单独触发压缩，强制标注 source/type
+        - 对话池（其他）：单独触发压缩，不带 source/type 标记
+        两个池独立判断 min_count，互不相通。
+        """
         # persona 在 AstrBot 中已被删除时，跳过（压缩孤儿记忆无意义）
         try:
             await self.context.persona_manager.get_persona(persona_id)
@@ -109,26 +116,54 @@ class MemoryCompactor:
             )
             return False
 
-        # 读取低重要性记忆
+        compacted_diary = await self._compact_one_pool(
+            persona_id, source_filter="daymind"
+        )
+        compacted_conversation = await self._compact_one_pool(
+            persona_id, source_filter="conversation"
+        )
+        return compacted_diary or compacted_conversation
+
+    async def _compact_one_pool(self, persona_id: str, source_filter: str) -> bool:
+        """处理单个池（daymind 或 conversation）的压缩。返回是否执行了压缩。
+
+        v1.1.6 起，按池类型限制压缩代数上限：
+        - 日记池（daymind）：max_generation=0，只压原始记忆，generation=1 的日记摘要不再被压
+        - 对话池（conversation）：max_generation=1，压原始记忆和一次摘要，generation=2 的对话摘要不再被压
+        """
+        # 日记只允许一次压缩（原始→一次摘要），对话允许两次压缩（原始→一次→二次摘要）
+        max_generation = 0 if source_filter == "daymind" else 1
+
         memories = await self.lm_client.list_low_importance_memories(
             persona_id=persona_id,
             importance_threshold=self.importance_threshold,
             limit=100,
+            source_filter=source_filter,
+            max_generation=max_generation,
         )
 
         if len(memories) < self.min_count:
             logger.debug(
-                f"[LMPatch] persona '{persona_id}' 低重要性记忆仅 {len(memories)} 条，"
+                f"[LMPatch] persona '{persona_id}' {source_filter} 池低重要性记忆仅 "
+                f"{len(memories)} 条（max_generation={max_generation}），"
                 f"不足 {self.min_count} 条，跳过压缩"
             )
             return False
 
-        return await self._compact_memories(persona_id, memories)
+        return await self._compact_memories(
+            persona_id, memories, batch_kind=source_filter
+        )
 
     async def _compact_memories(
-        self, persona_id: str, memories: list[dict]
+        self, persona_id: str, memories: list[dict], batch_kind: str
     ) -> bool:
         """对给定的一批低重要性记忆执行压缩。
+
+        v1.1.6 起，batch_kind 决定使用哪套提示词与强制标注：
+        - "daymind"：使用 MEMORY_COMPACT_SYSTEM_PROMPT_DIARY，新摘要强制写入
+          source="daymind" + type="diary"，重要性 clamp 到 0.5 以下
+        - "conversation"：使用 MEMORY_COMPACT_SYSTEM_PROMPT_CONVERSATION，
+          新摘要不带 source/type 标记（默认 unknown）
 
         流程：先 add 新摘要全部成功后再 delete 旧记忆（避免删除后新增失败导致数据丢失）。
         输出格式与 LivingMemory 的记忆格式对齐：第一人称、保留会话ID、
@@ -137,6 +172,12 @@ class MemoryCompactor:
         """
         from collections import Counter
         from datetime import datetime
+
+        # 根据 batch_kind 选择提示词
+        if batch_kind == "daymind":
+            system_prompt = MEMORY_COMPACT_SYSTEM_PROMPT_DIARY
+        else:
+            system_prompt = MEMORY_COMPACT_SYSTEM_PROMPT_CONVERSATION
 
         # 获取人格系统提示词，为 LLM 提供人格上下文
         persona_text = ""
@@ -160,7 +201,7 @@ class MemoryCompactor:
             memories_text=memories_text,
         )
         raw = await self.llm_helper.chat(
-            system_prompt=MEMORY_COMPACT_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_prompt,
             provider_id=self.llm_provider_id,
         )
@@ -170,14 +211,14 @@ class MemoryCompactor:
         result = extract_json(raw)
         if result is None:
             logger.warning(
-                f"[LMPatch] persona '{persona_id}' 压缩 LLM 输出无法解析为 JSON"
+                f"[LMPatch] persona '{persona_id}' ({batch_kind}) 压缩 LLM 输出无法解析为 JSON"
             )
             return False
 
         summaries = result.get("summaries", [])
         if not summaries or not isinstance(summaries, list):
             logger.warning(
-                f"[LMPatch] persona '{persona_id}' 压缩 LLM 输出无有效 summaries"
+                f"[LMPatch] persona '{persona_id}' ({batch_kind}) 压缩 LLM 输出无有效 summaries"
             )
             return False
 
@@ -185,20 +226,25 @@ class MemoryCompactor:
         original_ids = [m["id"] for m in memories]
         created_ids: list[int] = []
 
-        # 收集所有来源记忆的会话ID和source，用于为新摘要选择 session_id 和 source
+        # 收集所有来源记忆的会话ID，用于为新摘要选择 session_id
         source_session_list: list[str] = []
-        source_set: set[str] = set()
+        # v1.1.6：计算本批记忆的最大 compact_generation，新摘要的 generation = max + 1
+        # 原始记忆无 compact_generation 字段视为 0
+        max_src_generation = 0
         for m in memories:
             meta = m.get("metadata", {}) or {}
             sid = meta.get("session_id")
             if sid:
                 source_session_list.append(sid)
-            src = meta.get("source")
-            if src:
-                source_set.add(str(src))
-
-        # 整批级别 source 回退：若所有原始记忆 source 相同则继承，混合或全无则 None（默认 unknown）
-        batch_source = next(iter(source_set)) if len(source_set) == 1 else None
+            src_gen = meta.get("compact_generation")
+            if src_gen is not None:
+                try:
+                    src_gen_int = int(src_gen)
+                    if src_gen_int > max_src_generation:
+                        max_src_generation = src_gen_int
+                except (TypeError, ValueError):
+                    pass
+        new_generation = max_src_generation + 1
 
         for idx, summary in enumerate(summaries):
             if not isinstance(summary, dict):
@@ -231,6 +277,14 @@ class MemoryCompactor:
             except (TypeError, ValueError):
                 importance = 0.5
             importance = max(0.0, min(1.0, importance))
+
+            # 日记池强制 clamp 重要性到 0.5 以下（提示词已要求，代码兜底）
+            if batch_kind == "daymind" and importance > 0.5:
+                logger.debug(
+                    f"[LMPatch] persona '{persona_id}' 日记压缩摘要重要性 {importance} "
+                    f"超过 0.5，clamp 到 0.4"
+                )
+                importance = 0.4
 
             # source_count
             source_count = summary.get("source_count", 0)
@@ -277,16 +331,6 @@ class MemoryCompactor:
             else:
                 new_session_id = None
 
-            # 确定新摘要的 source：
-            # 优先使用 LLM 输出的 source，回退到整批级别判断
-            llm_source = str(summary.get("source", "")).strip().lower()
-            if llm_source in ("daymind", "unknown", "mixed"):
-                new_source = llm_source
-            elif batch_source:
-                new_source = batch_source
-            else:
-                new_source = None  # 默认 unknown，不写入 metadata
-
             # 构建 metadata，与 LivingMemory 的格式对齐
             metadata = {
                 "importance": importance,
@@ -302,11 +346,18 @@ class MemoryCompactor:
                 "persona_summary": summary_text,
                 "summary_schema_version": "v2",
                 "source_session_ids": [str(s) for s in llm_session_ids if s],
+                # v1.1.6：压缩代数标记，用于限制最大压缩轮数
+                # 日记池 max_generation=0 → 新摘要 generation=1（不再被压）
+                # 对话池 max_generation=1 → 新摘要 generation=1 或 2（generation=2 不再被压）
+                "compact_generation": new_generation,
             }
             if participants:
                 metadata["participants"] = participants
-            if new_source:
-                metadata["source"] = new_source
+
+            # v1.1.6：source 和 type 由 batch_kind 强制写入，不依赖 LLM 输出
+            if batch_kind == "daymind":
+                metadata["source"] = "daymind"
+                metadata["type"] = "diary"
 
             new_id = await self.lm_client.add_memory(
                 content=canonical_summary,
@@ -319,19 +370,19 @@ class MemoryCompactor:
                 created_ids.append(new_id)
             else:
                 logger.warning(
-                    f"[LMPatch] persona '{persona_id}' 添加摘要 #{idx + 1} 失败"
+                    f"[LMPatch] persona '{persona_id}' ({batch_kind}) 添加摘要 #{idx + 1} 失败"
                 )
 
         if not created_ids:
             logger.warning(
-                f"[LMPatch] persona '{persona_id}' 所有摘要添加失败，不删除原始记忆"
+                f"[LMPatch] persona '{persona_id}' ({batch_kind}) 所有摘要添加失败，不删除原始记忆"
             )
             return False
 
         # 批量删除原始记忆
         deleted_count = await self.lm_client.batch_delete_memories(original_ids)
         logger.info(
-            f"[LMPatch] persona '{persona_id}' 压缩完成："
+            f"[LMPatch] persona '{persona_id}' ({batch_kind}) 压缩完成："
             f"删除 {deleted_count}/{len(original_ids)} 条原始记忆，"
             f"新增 {len(created_ids)} 条摘要"
         )
@@ -402,52 +453,77 @@ class MemoryCompactor:
                     current_persona_idx=idx,
                 )
 
-                # 循环压缩当前 persona 的低重要性记忆
-                consecutive_failures = 0
-                while True:
+                # v1.1.6：每个 persona 内部先压日记池，再压对话池
+                for source_filter in ("daymind", "conversation"):
+                    pool_compacted = await self._compact_init_pool(
+                        persona_id, source_filter
+                    )
+                    total_compacted += pool_compacted
+                    # 检查是否被取消
                     state = await self.store.get_init_state()
                     if state.get("status") != "running":
                         return
 
-                    memories = await self.lm_client.list_low_importance_memories(
-                        persona_id=persona_id,
-                        importance_threshold=self.importance_threshold,
-                        limit=INIT_COMPACT_BATCH,
-                    )
-
-                    if len(memories) < self.min_count:
-                        logger.info(
-                            f"[LMPatch] persona '{persona_id}' 低重要性记忆已全部压缩完，"
-                            f"进入下一个 persona"
-                        )
-                        break
-
-                    success = await self._compact_memories(persona_id, memories)
-                    if success:
-                        consecutive_failures = 0
-                        total_compacted += len(memories)
+                    if pool_compacted > 0:
                         await self.store.update_init_state(
                             total_compacted=total_compacted,
                         )
-                    else:
-                        consecutive_failures += 1
-                        logger.warning(
-                            f"[LMPatch] persona '{persona_id}' 一批压缩失败"
-                            f"（连续第 {consecutive_failures} 次），跳过该批继续"
-                        )
-                        # 连续失败超过阈值时跳过当前 persona，避免死循环读取相同批次
-                        if consecutive_failures >= _INIT_MAX_CONSECUTIVE_FAILURES:
-                            logger.warning(
-                                f"[LMPatch] persona '{persona_id}' 连续压缩失败 "
-                                f"{consecutive_failures} 次，跳过该 persona 进入下一个"
-                            )
-                            break
 
             await self.store.complete_init(0, total_compacted)
             logger.info(f"[LMPatch] 记忆压缩初始化完成，共压缩 {total_compacted} 条记忆")
         except Exception as e:
             logger.error(f"[LMPatch] 记忆压缩初始化失败: {e}", exc_info=True)
             await self.store.cancel_init(str(e))
+
+    async def _compact_init_pool(self, persona_id: str, source_filter: str) -> int:
+        """初始化流程中压缩单个 persona 的单个池。
+
+        返回该池压缩掉的原始记忆总数（0 表示未压缩或不足阈值）。
+        v1.1.6 起按池类型限制压缩代数上限（与正常周期一致）。
+        """
+        # 日记只允许一次压缩（原始→一次摘要），对话允许两次压缩（原始→一次→二次摘要）
+        max_generation = 0 if source_filter == "daymind" else 1
+        consecutive_failures = 0
+        pool_compacted = 0
+        while True:
+            state = await self.store.get_init_state()
+            if state.get("status") != "running":
+                return pool_compacted
+
+            memories = await self.lm_client.list_low_importance_memories(
+                persona_id=persona_id,
+                importance_threshold=self.importance_threshold,
+                limit=INIT_COMPACT_BATCH,
+                source_filter=source_filter,
+                max_generation=max_generation,
+            )
+
+            if len(memories) < self.min_count:
+                logger.info(
+                    f"[LMPatch] persona '{persona_id}' {source_filter} 池低重要性记忆"
+                    f"已全部压缩完（剩余 {len(memories)} 条不足 {self.min_count}）"
+                )
+                return pool_compacted
+
+            success = await self._compact_memories(
+                persona_id, memories, batch_kind=source_filter
+            )
+            if success:
+                consecutive_failures = 0
+                pool_compacted += len(memories)
+            else:
+                consecutive_failures += 1
+                logger.warning(
+                    f"[LMPatch] persona '{persona_id}' {source_filter} 池一批压缩失败"
+                    f"（连续第 {consecutive_failures} 次），跳过该批继续"
+                )
+                # 连续失败超过阈值时跳过当前池，避免死循环读取相同批次
+                if consecutive_failures >= _INIT_MAX_CONSECUTIVE_FAILURES:
+                    logger.warning(
+                        f"[LMPatch] persona '{persona_id}' {source_filter} 池连续压缩失败 "
+                        f"{consecutive_failures} 次，跳过该池进入下一个"
+                    )
+                    return pool_compacted
 
     async def cancel_compact_init(self) -> dict:
         """取消记忆压缩初始化。"""

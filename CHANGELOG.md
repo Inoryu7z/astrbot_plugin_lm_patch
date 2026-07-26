@@ -1,3 +1,97 @@
+### v1.1.8
+
+**🔁 压缩代数限制：日记最多压一次，对话最多压两次**
+
+v1.1.7 让日记与对话分池压缩后，新问题是"压缩摘要本身能否被再次压缩"。无限制递归压缩会让 LLM 反复精炼已精炼过的内容，信息丢失风险随代数递增；日记一次压缩已到极限，对话两次压缩后信息已高度浓缩。
+
+本次新增 `compact_generation` 字段标记压缩代数，并按池类型限制最大压缩轮数。
+
+**1. 🏷️ 压缩代数标记**
+
+* 原始记忆：无 `compact_generation` 字段（视为 0）
+* 一次压缩摘要：`compact_generation=1`
+* 二次压缩摘要：`compact_generation=2`
+* `_compact_memories` 写入新摘要时：`new_generation = max(本批记忆的 generation, 默认0) + 1`
+* 允许 generation=0 和 generation=1 的记忆在同一批被压成 generation=2（避免某些记忆存在时间长、某些短导致的分批复杂度）
+
+**2. 🔢 按池类型限制压缩代数上限**
+
+| 池 | max_generation | 含义 |
+|---|---|---|
+| 日记池（daymind） | 0 | 只压原始记忆（generation=0），generation=1 的日记摘要不再被压 |
+| 对话池（conversation） | 1 | 压原始记忆（generation=0）和一次摘要（generation=1），generation=2 的对话摘要不再被压 |
+
+* 日记压一次足够：日记是虚构内容，一次压缩已做"激进合并保留情感"，再压只会丢失仅剩的情感碎片
+* 对话压两次合理：对话是真实信息，给两轮压缩机会充分精炼，但两轮后信息已高度浓缩，再压 LLM 风险大于收益
+* 超过代数上限的摘要不被 `list_low_importance_memories` 返回，不再进入压缩流程，由 LivingMemory 自身清理机制（阈值 0.3）自然接管
+
+**3. 🛠️ 实现细节**
+
+* `lm_client.list_low_importance_memories` 新增 `max_generation` 参数：
+  - SQL 过滤：`CAST(COALESCE(NULLIF(compact_generation, ''), '0') AS INTEGER) <= ?`
+  - `NULLIF(..., '')` 把空字符串转 NULL，`COALESCE(..., '0')` 把 NULL 转 '0'，正确处理无字段/空值/正常值三种情况
+  - `None` 表示不过滤（向后兼容）
+* `MemoryCompactor._compact_one_pool` 按池类型传 `max_generation`：日记池=0，对话池=1
+* `MemoryCompactor._compact_init_pool` 同步适配（WebUI 初始化流程与正常周期一致）
+* 二次压缩的对话摘要不限制重要性上限（LLM 正常评估）
+
+**4. 📌 设计哲学**
+
+* **不对称设计**：日记被压制（只压一次）、对话被保留（压两次），与 v1.1.6 检索过滤、v1.1.7 双池分离的设计哲学一脉相承
+* **让 LivingMemory 自然清理接管**：超过代数上限的摘要不被再压，importance 仍会随时间衰减，低于 0.3 时被 LivingMemory 清理。被清理是"遗忘"，被错误压缩是"记错"——后者更危险
+* **混合批次安全**：generation=0 和 generation=1 可在同一批被压成 generation=2，无需按代数分批。混合本身不会造成信息丢失，因为同池内来源类型一致
+
+---
+
+### v1.1.7
+
+**🧠 记忆压缩双池分离：日记与对话独立压缩**
+
+v1.1.6 让日记在检索环节被压制，但压缩环节仍是混合处理：日记与真实对话记忆合并成同一批摘要，提示词需用 mixed 策略让 LLM 区分对待，但 LLM 实际执行精准度有限。同时 v1.1.5 的 source 字段依赖 LLM 输出，若 LLM 不输出则压缩后日记摘要丢失标记，下次检索过滤补丁识别不到。
+
+本次将压缩环节做根因改造：**日记与对话分池压缩，互不相通**。每个池独立判断 min_count 触发，使用专属提示词，强制标注来源标记。
+
+**1. 🔀 双池分离压缩**
+
+* `lm_client.list_low_importance_memories` 新增 `source_filter` 参数：
+  - `"daymind"`：只查 `source="daymind"` 的日记记忆
+  - `"conversation"`：只查非日记记忆（含 source 为 None/unknown/mixed 或其他值）
+  - `None`：不过滤（向后兼容）
+  - 对话池过滤用 SQLite `IS NOT`（null-safe 不等）：`NULL IS NOT 'daymind'` → true，正确包含无 source 字段的旧记忆
+* `MemoryCompactor._compact_single_persona` 拆为两步：先压缩日记池，再压缩对话池，各自独立判断 `min_count`
+* `MemoryCompactor._compact_memories` 新增 `batch_kind` 入参：
+  - `"daymind"`：使用日记专属提示词，新摘要强制写入 `source="daymind"` + `type="diary"`，重要性 clamp 到 0.5 以下
+  - `"conversation"`：使用对话专属提示词，新摘要不带 source/type 标记
+* `MemoryCompactor._compact_init_pool` 新增辅助方法：WebUI 触发的初始化流程中，每个 persona 内部先压日记池再压对话池，独立循环
+
+**2. 📝 提示词拆为两套（`prompts.py`）**
+
+* 新增 `MEMORY_COMPACT_SYSTEM_PROMPT_DIARY`（日记专属）：
+  - 强调激进合并、保留情感与心路、淡化具体事件
+  - 压缩后重要性建议 0.3-0.4，**不应高于 0.5**
+  - 淡化"用户重大决定"为弱化表述
+* 新增 `MEMORY_COMPACT_SYSTEM_PROMPT_CONVERSATION`（对话专属）：
+  - 强调信息保全优先、正常合并冗余、重要性可重新评估
+  - 保留完整的"压缩=合并冗余而非删减"说明与示例
+* 移除 mixed 策略章节（不再产生混合批次）
+* 移除 source 输出字段（由代码根据 batch_kind 强制写入）
+* `MEMORY_COMPACT_USER_TEMPLATE` 共用，不区分批次类型
+* 旧别名 `MEMORY_COMPACT_SYSTEM_PROMPT` 保留指向 CONVERSATION 版本，防止外部引用断裂
+
+**3. 🛡️ 强制标注与重要性 clamp**
+
+* 日记池压缩后摘要 metadata 强制写入 `source="daymind"` + `type="diary"`，不依赖 LLM 输出
+* 日记池新摘要重要性 > 0.5 时代码强制 clamp 到 0.4（提示词已要求，代码兜底）
+* 对话池压缩后摘要不带 source/type 标记（默认 unknown）
+
+**4. 📌 设计哲学**
+
+* **池子互不相通**：日记永远只与日记合并，对话永远只与对话合并，避免虚构事件污染真实记忆摘要
+* **强制标注**：压缩后日记摘要必然带 source/type 标记，确保下次压缩时仍被识别进入日记池，下次检索时被 v1.1.6 过滤补丁识别压制
+* **代码兜底**：提示词要求 LLM 做的事（importance 不超过 0.5、source 标记），代码层都做了 clamp 与强制写入，不依赖 LLM 遵守度
+
+---
+
 ### v1.1.6
 
 **🛡️ 日记过滤补丁：检索结果中日记条目数量压制**
