@@ -95,36 +95,29 @@ WebUI 中并排展示原始人设与提议人设，diff 一目了然。
 
 ### 🧹 `/reset` 兼容补丁（v1.1.3）
 
-AstrBot 4.26+ 把 `/reset` 的内部信号键名从 `_clean_ltm_session` 改为 `_clean_group_context_session`，但 LivingMemory 2.3.5 仍监听旧键名，导致 `/reset` 后 LivingMemory 的会话清理钩子不触发，旧对话消息仍留在其独立数据库里，最终被总结进长期记忆。
+AstrBot 4.26+ 升级后，`/reset` 命令不再触发 LivingMemory 的会话清理——旧对话消息会留在 LivingMemory 的独立数据库里，最终被总结进长期记忆，导致"重置后 Bot 还记得重置前的事"。
 
-本补丁通过 `after_message_sent` 钩子监听新键名，触发后调用 LivingMemory 的 `event_handler.handle_session_reset` 完成清理。
+本补丁接管 `/reset` 信号，让 LivingMemory 的会话清理同步生效。
 
 ### 🧹 `/forget` 同步补丁（v1.1.4）
 
-[amnesia](https://github.com/AstrBotDevs/AstrBot_Plugins_Collection) 插件的 `/forget` 命令只清 AstrBot 的 `conversation_manager`（删除 conversation_history 最新 N 轮），完全不触碰 LivingMemory 的独立 SQLite 数据库。导致被 `/forget` 的对话仍留在 LivingMemory 中，仍被计入 `unsummarized_rounds`，最终被总结进长期记忆。
+[amnesia](https://github.com/AstrBotDevs/AstrBot_Plugins_Collection) 插件的 `/forget` 命令只清 AstrBot 自带的对话历史，完全不触碰 LivingMemory 的独立数据库。导致被 `/forget` 的对话仍留在 LivingMemory 中，仍被总结进长期记忆，"遗忘"名存实亡。
 
-本补丁在 `/forget` 执行后同步删除 LivingMemory 中对应的最新 N 轮消息，使其不计入轮次也不会被总结进记忆。
+本补丁在 `/forget` 执行后同步删除 LivingMemory 中对应的最新 N 轮消息，让遗忘真正生效。
 
 > ⚠️ 不兼容 amnesia 的 `/cancel_forget` 反悔机制：反悔时 AstrBot 侧恢复，但 LivingMemory 侧不恢复（影响是"少记"，而非"记错"）。
 
 ### 🗜️ 日记过滤补丁 + 压缩分池（v1.1.6）
 
-[DayMind](https://github.com/Inoryu7z/astrbot_plugin_daymind) 会向 LivingMemory 写入"日记"类虚拟记忆（`source=daymind`、`type=diary`）。如果不加干预，会出现两个问题：
+[DayMind](https://github.com/Inoryu7z/astrbot_plugin_daymind) 会向 LivingMemory 写入"日记"类虚拟记忆。如果不加干预，会出现两个问题：
 
 1. **召回稀释**：检索时日记条目过多，挤占真实对话记忆的占比，导致回复跑偏
 2. **压缩误并**：日记与对话记忆被一并压缩，摘要混乱、重要性评估失真
 
-本补丁通过 monkey-patch 包装 LivingMemory 的 `search_memories`，将单次检索结果中日记条目数量限制为可配置的上限（默认 1 条）。同时记忆压缩拆为**日记池 / 对话池**两个互不相通的子池，各自独立判断触发阈值：
+本补丁做两件事：
 
-| 维度 | 日记池 | 对话池 |
-|------|--------|--------|
-| 触发条件 | daymind 日记累积到 `memory_compact_min_count` | 普通记忆累积到 `memory_compact_min_count` |
-| 提示词 | 专属日记压缩提示词 | 通用对话压缩提示词 |
-| 输出标记 | 强制 `source="daymind"` + `type="diary"` | 通用 `source` / `type` |
-| 重要性上限 | 0.5（避免日记摘要喧宾夺主） | 无上限 |
-| 压缩代数上限 | 最多压一次 | 最多压两次 |
-
-超过压缩代数上限的记忆由 LivingMemory 自然清理机制接管，不再被反复压缩。
+- **召回过滤**：单次检索结果中日记条目最多保留 1 条（可配置），其余让位给真实对话记忆
+- **压缩分池**：日记与对话记忆分别走各自的压缩流程，互不污染。日记压缩后重要性上限 0.5（避免日记摘要喧宾夺主），最多压一次；对话记忆最多压两次。超限的由 LivingMemory 自然清理接管
 
 ---
 
@@ -275,18 +268,6 @@ data/plugins/
 - **压缩数据安全**：先 add 新摘要全部成功后再 delete 旧记忆，避免删除后新增失败导致数据丢失。
 - **打回不重读记忆**：reroll 只基于原始人设 + 上次提议 + 打回理由，节省 token。
 - **回滚安全性**：回滚前自动保存当前人设为新快照，便于撤销回滚。
-
-### 补丁暗线的入口
-
-三条补丁暗线不参与周期调度，而是事件驱动：
-
-| 补丁 | 触发事件 | 入口 |
-|------|---------|------|
-| `/reset` 兼容补丁 | `after_message_sent` 钩子检测到 `_clean_group_context_session` 信号 | 调用 `livingmemory.event_handler.handle_session_reset` |
-| `/forget` 同步补丁 | `after_message_sent` 钩子检测到 `/forget` 命令 | 直接 DELETE livingmemory `messages` 表中对应的最新 N 轮 |
-| 日记过滤补丁 | 插件加载时后台等待 livingmemory 就绪，monkey-patch `memory_engine.search_memories` | 包装原方法，按 `source=daymind` 过滤召回结果 |
-
-补丁全部在插件 terminate 时卸载（取消 monkey-patch、移除钩子），不会污染 LivingMemory 自身行为。
 
 ---
 
