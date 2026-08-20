@@ -246,14 +246,23 @@ class LMPatchPlugin(Star):
         """[Patch] 兼容 AstrBot 4.26+ 的 /reset 信号键名变更。
 
         AstrBot 在某次版本升级中把 /reset 的 extra 键名从 _clean_ltm_session
-        改为 _clean_group_context_session，但 livingmemory 2.3.5 仍监听旧键名，
+        改为 _clean_group_context_session，但旧版 livingmemory 仍只监听旧键名，
         导致 /reset 后 livingmemory 的会话清理钩子不触发，旧对话消息仍留在
         livingmemory 自己的数据库里，最终被总结进长期记忆。
 
         本钩子监听新键名 _clean_group_context_session，触发后调用 livingmemory
-        的 event_handler.handle_session_reset 完成清理。
+        的 event_handler.handle_session_reset 完成清理。若当前 livingmemory 已
+        自行监听该信号（v2.6.0-beta.2+），则跳过，避免重复清理。
         """
         if not event.get_extra("_clean_group_context_session", False):
+            return
+
+        # 新版 livingmemory（v2.6.0-beta.2+）已自行监听 _clean_group_context_session，
+        # 由它自己清理即可，lm_patch 无需再代为触发（避免 clear_session 重复执行）。
+        if self.lm_client.livingmemory_handles_group_context_reset():
+            logger.debug(
+                "[LMPatch] /reset 补丁：livingmemory 已自行监听 _clean_group_context_session，跳过"
+            )
             return
 
         plugin = await self.lm_client.get_plugin()

@@ -102,6 +102,27 @@ class LMClient:
         """检查 livingmemory 是否已加载并初始化完成。"""
         return await self.get_memory_engine() is not None
 
+    def livingmemory_handles_group_context_reset(self) -> bool:
+        """检测 livingmemory 是否已自行监听 _clean_group_context_session。
+
+        新版 livingmemory（v2.6.0-beta.2+）自身已同时监听新旧两个会话重置
+        信号，lm_patch 再代为触发会重复执行 clear_session（幂等但冗余）。
+        此处直接读取已加载的 livingmemory main 模块源码，确认其是否已自行
+        处理该信号，从而决定 /reset 补丁是否需要跳过。
+        """
+        try:
+            import importlib
+
+            base = _LM_MODULE_PATH.rsplit(".", 2)[0]  # data.plugins.astrbot_plugin_livingmemory
+            mod = importlib.import_module(f"{base}.main")
+            source_file = getattr(mod, "__file__", None)
+            if not source_file:
+                return False
+            with open(source_file, "r", encoding="utf-8") as f:
+                return "_clean_group_context_session" in f.read()
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------
     # 记忆查询（直读 SQLite，参考 livingmemory Page API 的做法）
     # ------------------------------------------------------------------
